@@ -532,6 +532,24 @@ print(f'Adapter saved to {ADAPTER_DIR}')
 # from peft import PeftModel
 # model = PeftModel.from_pretrained(base_model, ADAPTER_DIR)"""
 
+DRIVE_SAVE_CODE = """# Cell 11 \u2014 Mount Google Drive and copy the adapter folder to it (so it survives the VM)
+from google.colab import drive
+import shutil, os
+
+drive.mount('/content/drive')
+
+DEST = '/content/drive/MyDrive/chronosoul_lora_final'
+SRC = './chronosoul_lora_final'
+
+os.makedirs(os.path.dirname(DEST), exist_ok=True)
+if os.path.exists(DEST):
+    shutil.rmtree(DEST)
+shutil.copytree(SRC, DEST)
+
+size_mb = sum(os.path.getsize(os.path.join(dp, f)) for dp, _, fs in os.walk(DEST) for f in fs) / 1e6
+print(f'\u2705 Copied {SRC} \u2192 {DEST} ({size_mb:.1f} MB)')
+print('Grab it from Drive \u2192 My Drive \u2192 chronosoul_lora_final')"""
+
 TEST_MD = """## \u2728 Talk to the finetuned mind
 Now chat again \u2014 the same substrate conditions every reply, but the voice is now shaped by training, not just prompting. Watch how `substrate.affect` and the memory enclaves evolve as you talk."""
 
@@ -575,6 +593,7 @@ cells = [
     md(FINETUNE_MD),
     code(FINETUNE_CODE),
     code(SAVE_CODE),
+    code(DRIVE_SAVE_CODE),
     md(TEST_MD),
     code(TEST_CODE),
     code(PERSIST_CODE),
