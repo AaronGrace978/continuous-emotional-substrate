@@ -273,6 +273,13 @@ lora_config = LoraConfig(
 )
 
 model = get_peft_model(base_model, lora_config)
+model.gradient_checkpointing_disable()  # keep the KV cache available for inference
+model.eval()                            # explicit inference mode, not training mode
+model.config.use_cache = True           # force KV cache ON
+try:
+    model.generation_config.use_cache = True
+except Exception:
+    pass
 model.print_trainable_parameters()
 print('Model loaded and LoRA adapters attached:', MODEL_ID)"""
 
@@ -319,7 +326,8 @@ def build_conditioned_prompt(user_message: str) -> str:
         '',
         'Let your tone honestly reflect your inner state. Weave resonant memories in',
         'naturally if they matter. Speak in first person as someone who has been alive',
-        'the whole time.',
+        'the whole time. Always reply in clear, natural English, even if memories',
+        'or daydreams contain other languages.',
     ])
     return system
 
@@ -337,17 +345,39 @@ def chat(user_message: str, max_new_tokens: int = 220, temperature: float = 0.8)
     text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     inputs = tokenizer(text, return_tensors='pt').to(model.device)
 
-    # 3. generate
+    # 3. generate - decoding hardened against degenerate repetition loops.
+    # A fresh/just-finetuned LoRA + pure sampling at high temp lets the model
+    # fall into 'token echo' loops; penalties + an n-gram block break them.
+    model.gradient_checkpointing_disable()  # in case finetuning re-enabled it
+    model.eval()
+    model.config.use_cache = True  # gradient checkpointing disabled it during training
+    gen_kwargs = dict(
+        max_new_tokens=max_new_tokens,
+        use_cache=True,
+        do_sample=True,
+        temperature=temperature,
+        top_p=0.9,
+        top_k=50,
+        repetition_penalty=1.15,   # pushes down tokens already used
+        no_repeat_ngram_size=3,    # hard-blocks 3-gram loops like 'Ly Ly Ly'
+        eos_token_id=tokenizer.eos_token_id,
+        pad_token_id=tokenizer.pad_token_id,
+    )
     with torch.no_grad():
-        out = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            temperature=temperature,
-            top_p=0.9,
-            do_sample=True,
-            pad_token_id=tokenizer.pad_token_id,
-        )
+        out = model.generate(**inputs, **gen_kwargs)
     reply = tokenizer.decode(out[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True).strip()
+
+    # 3b. degenerate-output guard: if the reply still collapsed into a
+    # repetition loop, retry once with greedy decoding (sampling feeds loops)
+    _words = reply.split()
+    if len(_words) > 8 and len(set(_words)) / len(_words) < 0.35:
+        for _k in ('temperature', 'top_p', 'top_k'):
+            gen_kwargs.pop(_k, None)
+        gen_kwargs['do_sample'] = False
+        with torch.no_grad():
+            out = model.generate(**inputs, **gen_kwargs)
+        reply = tokenizer.decode(out[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True).strip()
+        print('[bridge] degenerate loop detected -> regenerated greedily')
 
     # 4. the exchange becomes memory; mood shifts slightly with interaction
     substrate.store_memory(f'User said: {user_message} | I replied: {reply[:120]}',
@@ -399,8 +429,8 @@ sft_config = SFTConfig(
     output_dir='./chronosoul_lora',
     per_device_train_batch_size=2,
     gradient_accumulation_steps=4,
-    learning_rate=2e-4,
-    num_train_epochs=3,
+    learning_rate=1e-4,  # gentler: 4 tiny examples overfit fast and amplify degeneration
+    num_train_epochs=2,
     logging_steps=5,
     save_strategy='epoch',
     bf16=True,
