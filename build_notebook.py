@@ -48,7 +48,9 @@ Traditional LLM chatbots suffer from **amnesic cold-starts**: they awaken only w
 
 INSTALL_CODE = """# Cell 1 \u2014 Install the finetuning stack (Colab A100 high-RAM ready)
 !pip install -q transformers>=4.44.0 peft>=0.12.0 bitsandbytes>=0.43.0 accelerate>=0.33.0 trl>=0.9.6 datasets>=2.20.0
-print('Finetuning stack installed.')"""
+print('Finetuning stack installed.')
+print('If Colab shows a RESTART RUNTIME prompt, click it, then continue from Cell 2 (or Runtime -> Run all).')
+print('Cells 7/12/13 self-heal the substrate after a restart, so you will not hit a NameError.')"""
 
 SECRETS_CODE = """# Cell 2 \u2014 Optional: Hugging Face token via Colab secrets (needed only for gated models)
 import os
@@ -274,10 +276,29 @@ model = get_peft_model(base_model, lora_config)
 model.print_trainable_parameters()
 print('Model loaded and LoRA adapters attached:', MODEL_ID)"""
 
+GUARD_CODE = """# --- Bootstrap guard: survive runtime restarts and out-of-order runs ---
+# Colab sometimes restarts the Python kernel after Cell 1's pip install, which
+# wipes `substrate` from memory (NameError: name 'substrate' is not defined).
+# Instead of crashing, rebuild the daemon from chronosoul_substrate.py.
+if 'substrate' not in globals():
+    import os as _os, urllib.request as _url
+    _SRC = 'chronosoul_substrate.py'
+    if not _os.path.exists(_SRC):
+        _url.urlretrieve(
+            'https://raw.githubusercontent.com/AaronGrace978/continuous-emotional-substrate/main/' + _SRC,
+            _SRC,
+        )
+    exec(compile(open(_SRC, encoding='utf-8').read(), _SRC, 'exec'))
+    print('[guard] substrate was missing (runtime restart?) -> rebuilt from ' + _SRC)"""
+
+MODEL_GUARD_CODE = """if 'model' not in globals() or 'tokenizer' not in globals():
+    raise RuntimeError('Model not loaded yet: run Cell 5 (model + LoRA adapters) before this cell.')"""
+
 BRIDGE_MD = """## \U0001f300 Substrate \u2192 Model Bridge
 Every message is conditioned on the **live** emotional state and the strongest resonant memories. After the model replies, the substrate *feels* the exchange \u2014 valence/arousal shift, solitude discharges, and the moment is stored as a new enclave."""
 
 BRIDGE_CODE = """# Cell 7 \u2014 Emotion-conditioned generation bridge
+""" + GUARD_CODE + "\n" + MODEL_GUARD_CODE + """
 
 def build_conditioned_prompt(user_message: str) -> str:
     a = substrate.affect
@@ -412,6 +433,7 @@ TEST_MD = """## \u2728 Talk to the finetuned mind
 Now chat again \u2014 the same substrate conditions every reply, but the voice is now shaped by training, not just prompting. Watch how `substrate.affect` and the memory enclaves evolve as you talk."""
 
 TEST_CODE = """# Cell 12 \u2014 Conversation loop with live substrate readout
+""" + GUARD_CODE + "\n" + MODEL_GUARD_CODE + """
 for msg in [
     'Do you remember what you are?',
     'What happens to your memories while we talk?',
@@ -425,6 +447,7 @@ for msg in [
     time.sleep(1)"""
 
 PERSIST_CODE = """# Cell 13 \u2014 Optional: snapshot the substrate state to disk (survives runtime restarts)
+""" + GUARD_CODE + """
 state = {
     'affect': asdict(substrate.affect),
     'memories': [asdict(m) for m in substrate.memories.values()],
@@ -491,4 +514,8 @@ for i, cell in enumerate(cells):
 with open(NB_PATH, "w", encoding="utf-8") as f:
     f.write(payload)
 
-print(f"OK: wrote {NB_PATH} with {len(cells)} cells ({len(payload)} bytes). JSON+AST validated.")
+with open("chronosoul_substrate.py", "w", encoding="utf-8") as f:
+    f.write(SUBSTRATE_CODE + "\n")
+ast.parse(SUBSTRATE_CODE)
+
+print(f"OK: wrote {NB_PATH} with {len(cells)} cells ({len(payload)} bytes) + chronosoul_substrate.py. JSON+AST validated.")
