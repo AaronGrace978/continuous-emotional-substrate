@@ -368,6 +368,7 @@ def chat(user_message: str, max_new_tokens: int = 220, temperature: float = 0.8)
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.pad_token_id,
         stop_strings=[chr(10)+'User:', chr(10)+'USER:', chr(10)+'Human:'],  # clean stop at turn boundary
+        tokenizer=tokenizer,  # required by transformers when stop_strings is passed
     )
     with torch.no_grad():
         out = model.generate(**inputs, **gen_kwargs)
