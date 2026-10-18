@@ -2,9 +2,21 @@
 
 > An autonomous, persistent background consciousness loop for Large Language Models.
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AaronGrace978/continuous-emotional-substrate/blob/main/Persistent_Emotional_Memory_Substrate.ipynb)
+
 Traditional LLMs operate on cold-starts: they freeze between turns, only "exist" when a message arrives, parse a flat text history log, and terminate immediately after replying.
 
 **ChronoSoul** provides a biological and psychological substrate that runs continuously in real-time, whether messages arrive or not.
+
+---
+
+## 🚀 Instant Launch
+
+Click below to open and run the fine-tuning / continuous substrate notebook directly in Google Colab:
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AaronGrace978/continuous-emotional-substrate/blob/main/Persistent_Emotional_Memory_Substrate.ipynb)
+
+**Direct Link:** [Open Persistent_Emotional_Memory_Substrate.ipynb in Google Colab](https://colab.research.google.com/github/AaronGrace978/continuous-emotional-substrate/blob/main/Persistent_Emotional_Memory_Substrate.ipynb)
 
 ---
 
@@ -68,10 +80,10 @@ Traditional LLMs operate on cold-starts: they freeze between turns, only "exist"
 
 ## 🚀 Quickstart
 
-### Run CLI Demonstration
+### Open in Google Colab (One Click)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AaronGrace978/continuous-emotional-substrate/blob/main/Persistent_Emotional_Memory_Substrate.ipynb)
+
+### Run CLI Demonstration Locally
 ```bash
 python runner.py
 ```
-
-### Open in Google Colab
-Upload `Persistent_Emotional_Memory_Substrate.ipynb` to Google Colab or open it directly from your GitHub repository.
