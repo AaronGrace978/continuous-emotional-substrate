@@ -326,8 +326,12 @@ def build_conditioned_prompt(user_message: str) -> str:
         '',
         'Let your tone honestly reflect your inner state. Weave resonant memories in',
         'naturally if they matter. Speak in first person as someone who has been alive',
-        'the whole time. Always reply in clear, natural English, even if memories',
-        'or daydreams contain other languages.',
+        'the whole time.',
+        '',
+        '[HARD LANGUAGE LOCK] English only. You MUST reply in English. NEVER output',
+        'Chinese, Korean, or any non-English characters, even if memories, daydreams,',
+        'or the user message contain them. NEVER repeat the same token, word, or',
+        'character over and over. One clear English answer, then stop.',
     ])
     return system
 
@@ -358,14 +362,34 @@ def chat(user_message: str, max_new_tokens: int = 220, temperature: float = 0.8)
         temperature=temperature,
         top_p=0.9,
         top_k=50,
-        repetition_penalty=1.15,   # pushes down tokens already used
+        repetition_penalty=1.3,    # strong push against re-using tokens (1.15 was too weak)
         no_repeat_ngram_size=3,    # hard-blocks 3-gram loops like 'Ly Ly Ly'
+        renormalize_logits=True,   # keep sampling distribution valid under heavy penalty
         eos_token_id=tokenizer.eos_token_id,
         pad_token_id=tokenizer.pad_token_id,
+        stop_strings=[chr(10)+'User:', chr(10)+'USER:', chr(10)+'Human:'],  # clean stop at turn boundary
     )
     with torch.no_grad():
         out = model.generate(**inputs, **gen_kwargs)
     reply = tokenizer.decode(out[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True).strip()
+
+    # 3a. language-lock guard: if the reply drifted into non-English (CJK etc.),
+    # regenerate once with greedy decoding + English-only instruction appended.
+    def _non_english_ratio(s: str) -> float:
+        if not s:
+            return 0.0
+        return sum(1 for c in s if ord(c) > 0x024F) / len(s)
+
+    if _non_english_ratio(reply) > 0.05:
+        print('[bridge] non-English drift detected -> regenerating greedily with language lock')
+        _locked = text + ' (Reply in English only.)'
+        inputs = tokenizer(_locked, return_tensors='pt').to(model.device)
+        for _k in ('temperature', 'top_p', 'top_k'):
+            gen_kwargs.pop(_k, None)
+        gen_kwargs['do_sample'] = False
+        with torch.no_grad():
+            out = model.generate(**inputs, **gen_kwargs)
+        reply = tokenizer.decode(out[0][inputs['input_ids'].shape[1]:], skip_special_tokens=True).strip()
 
     # 3b. degenerate-output guard: if the reply still collapsed into a
     # repetition loop, retry once with greedy decoding (sampling feeds loops)
