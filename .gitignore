@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+persistent_substrate.json
+substrate_state.json
+.env
+*.log

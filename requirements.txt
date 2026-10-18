@@ -1,0 +1,4 @@
+# Core standard library only for default engine
+# Optional extensions:
+openai>=1.0.0
+requests>=2.28.0
