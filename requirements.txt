@@ -1,4 +1,8 @@
 # Core standard library only for default engine
+# Memory substrate (vector cache + SQLite tiers):
+numpy>=1.26
+faiss-cpu>=1.8.0
+sentence-transformers>=3.0.0  # all-MiniLM-L6-v2; falls back to a hashing embedder if absent
 # Optional extensions:
 openai>=1.0.0
 requests>=2.28.0

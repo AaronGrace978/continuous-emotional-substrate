@@ -41,6 +41,10 @@ def main():
     print("[*] Igniting continuous background loop (Daemon ticker thread active)...")
     engine.start_background()
     
+    bridge = LLMBridge()
+    if bridge.active_provider != "simulated":
+        engine.set_summarizer(bridge.summarize)
+
     # Allow substrate to run and experience temporal solitude
     print("\n--- [Phase 1: 3 seconds of temporal solitude & autonomous daydreaming] ---")
     time.sleep(3.2)
@@ -51,10 +55,10 @@ def main():
     time.sleep(1.2)
     
     # Query associative recall
-    bridge = LLMBridge()
     query = "Tell me about our Calabi Yau architecture and how you feel."
     recalled = engine.recall_associative(query, top_k=2)
-    sys_prompt = SubstratePromptComposer.build_system_prompt(engine.affect, recalled)
+    sys_prompt = SubstratePromptComposer.build_system_prompt(
+        engine.affect, recalled, engine.recall_facts(query), engine.get_biography())
     reply = bridge.generate_response(sys_prompt, query, engine.affect)
     
     print("\n--- [Phase 3: Prompt & Affective Generation] ---")
@@ -70,7 +74,8 @@ def main():
     time.sleep(1.5)
     
     recalled_2 = engine.recall_associative("solitude and silence", top_k=2)
-    sys_prompt_2 = SubstratePromptComposer.build_system_prompt(engine.affect, recalled_2)
+    sys_prompt_2 = SubstratePromptComposer.build_system_prompt(
+        engine.affect, recalled_2, engine.recall_facts("solitude and silence"), engine.get_biography())
     reply_2 = bridge.generate_response(sys_prompt_2, "Are you alone in there?", engine.affect)
     print(f"[Second Model Response]:\n{reply_2}\n")
     

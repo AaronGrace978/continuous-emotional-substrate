@@ -60,8 +60,14 @@ Click below to open and run the fine-tuning / continuous substrate notebook dire
 
 3. **Synaptic Memory Decay & Reinforcement:**
    - Memories lose transient activation exponentially ($e^{-\lambda t}$) unless recalled or emotionally re-stimulated.
-   - Recall ranks rare shared words (IDF) above filler, and only memories the moment actually touches get reinforced.
-   - The bank is capped: when it fills, the faintest, least-revisited enclaves are forgotten first. Core identity memories are never dropped.
+   - Recall is dense semantic search (all-MiniLM-L6-v2 embeddings, FAISS hot index) ranked by `(0.60 x similarity + 0.15 x recency + 0.25 x emotional congruence)`. Emotional congruence is distance in PAD space; when the current state is anxious (negative valence, high arousal) its weight grows and its kernel narrows, so memories filed in a similar mood surface first. Memories linked through the entity graph get a small extra boost.
+   - Only memories the moment actually touches get reinforced.
+   - Two-tier storage in SQLite (`<state>.db`): the hot tier (400 memories) stays in the vector cache; overflow is archived to cold storage on disk instead of deleted, and is pulled back when recalled. Core identity memories are never archived.
+   - Every memory carries a Unix timestamp, PAD coordinates, and an interaction type (`user_input`, `daydream_reflection`, `system`).
+
+3b. **Consolidation & Knowledge Graph:**
+   - After a few minutes without contact, the daydream loop gives blocks of raw chat to the LLM to extract permanent facts, then folds them into a short biographical summary. Entities ("user's dog", "project deadline") become graph nodes linking conversations across long gaps.
+   - `model_bridge.py` counts tokens before injecting memories. If retrieved raw text exceeds 2,000 tokens it is dropped and the compressed biographical summary is injected instead.
 
 4. **Sense of Time & Dormancy:**
    - Every prompt carries a `[TIME]` line with the clock and how long it has been since you last spoke.
@@ -84,8 +90,9 @@ Click below to open and run the fine-tuning / continuous substrate notebook dire
 - `ChronoSoul.bat` + `desktop/`: Electron desktop chamber (Windows launcher).
 - `chat_server.py`: Local server for the desktop chamber. Runs the substrate and talks through the PEMS LoRA on Qwen2.5-1.5B-Instruct.
 - `PEMS/`: The trained LoRA adapter the desktop chamber loads.
-- `substrate.py`: Core continuous daemon, affect models, and memory enclaves.
-- `model_bridge.py`: Dynamic prompt synthesizer and LLM interface (env-based authentication).
+- `substrate.py`: Core continuous daemon, affect models, memory enclaves, hybrid recall, and background consolidation.
+- `memory_store.py`: Embedder, FAISS hot index, SQLite hot/cold store, and the entity knowledge graph.
+- `model_bridge.py`: Dynamic prompt synthesizer, token-budget memory packer, and LLM interface (env-based authentication).
 - `runner.py`: Standalone CLI demonstration showing continuous background temporal drift.
 - `requirements.txt`: Lightweight dependencies.
 

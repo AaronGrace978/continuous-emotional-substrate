@@ -7,6 +7,9 @@ substrate_state.json
 chronosoul_desktop_state.json
 chronosoul_transcript.json
 *.json.tmp
+*.db
+*.db-wal
+*.db-shm
 .env
 *.log
 desktop/node_modules/

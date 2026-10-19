@@ -4,3 +4,6 @@ accelerate>=1.0
 safetensors>=0.4
 huggingface_hub>=0.26
 tqdm>=4.66
+numpy>=1.26
+faiss-cpu>=1.8.0
+sentence-transformers>=3.0.0
