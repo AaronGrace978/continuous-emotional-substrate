@@ -913,7 +913,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 class ThreadingServer(ThreadingHTTPServer):
-    allow_reuse_address = True
+    # On Windows SO_REUSEADDR lets a second process bind a port that is already
+    # listening, so a stray server would silently steal the chamber's traffic.
+    allow_reuse_address = sys.platform != "win32"
     daemon_threads = True
 
 
