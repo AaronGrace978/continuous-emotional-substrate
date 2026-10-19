@@ -621,7 +621,7 @@ class Mind:
                 return bool(cancel.is_set())
 
         kw = {
-            "max_new_tokens": 120,
+            "max_new_tokens": 400,
             "use_cache": True,
             "do_sample": sample,
             "repetition_penalty": 1.12,
