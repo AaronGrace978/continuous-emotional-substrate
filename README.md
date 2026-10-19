@@ -60,8 +60,17 @@ Click below to open and run the fine-tuning / continuous substrate notebook dire
 
 3. **Synaptic Memory Decay & Reinforcement:**
    - Memories lose transient activation exponentially ($e^{-\lambda t}$) unless recalled or emotionally re-stimulated.
+   - Recall ranks rare shared words (IDF) above filler, and only memories the moment actually touches get reinforced.
+   - The bank is capped: when it fills, the faintest, least-revisited enclaves are forgotten first. Core identity memories are never dropped.
 
-4. **Security & Credential Decoupling:**
+4. **Sense of Time & Dormancy:**
+   - Every prompt carries a `[TIME]` line with the clock and how long it has been since you last spoke.
+   - When the desktop chamber is closed, time still counts. On the next launch the substrate catches up in one step: solitude rises, mood settles to rest, memories fade by the elapsed time, and a dormancy memory records how long it was asleep.
+
+5. **Grounded Voice:**
+   - The mind is told, and the starter dataset trains it, that it lives in the chamber and has no body. It shouldn't invent trips, places, or shared memories it never lived.
+
+6. **Security & Credential Decoupling:**
    - Zero credentials or secrets are hard-coded.
    - Credentials dynamically read from `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or local runtime secrets (`google.colab.userdata`).
    - Fully operational in offline simulated mode without external network keys.
@@ -71,6 +80,10 @@ Click below to open and run the fine-tuning / continuous substrate notebook dire
 ## 📂 Repository Contents
 
 - `Persistent_Emotional_Memory_Substrate.ipynb`: Interactive Google Colab notebook demonstrating continuous background threads and stimulus injection.
+- `build_notebook.py`: Generates the notebook and `chronosoul_substrate.py`. Edit this, then run `python build_notebook.py`. Don't hand-edit the `.ipynb`.
+- `ChronoSoul.bat` + `desktop/`: Electron desktop chamber (Windows launcher).
+- `chat_server.py`: Local server for the desktop chamber. Runs the substrate and talks through the PEMS LoRA on Qwen2.5-1.5B-Instruct.
+- `PEMS/`: The trained LoRA adapter the desktop chamber loads.
 - `substrate.py`: Core continuous daemon, affect models, and memory enclaves.
 - `model_bridge.py`: Dynamic prompt synthesizer and LLM interface (env-based authentication).
 - `runner.py`: Standalone CLI demonstration showing continuous background temporal drift.
@@ -87,3 +100,6 @@ Click below to open and run the fine-tuning / continuous substrate notebook dire
 ```bash
 python runner.py
 ```
+
+### Run the Desktop Chamber (Windows)
+Double-click `ChronoSoul.bat` (needs Node.js). The first launch installs Electron and downloads the Qwen2.5-1.5B base weights. Set `CHRONOSOUL_SKIP_MODEL=1` to try the UI with a simulated voice.

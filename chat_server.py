@@ -65,6 +65,15 @@ def describe(affect) -> str:
     return ", ".join(mood)
 
 
+def span(seconds: float) -> str:
+    s = max(0, int(seconds))
+    for unit, size in (("day", 86400), ("hour", 3600), ("minute", 60)):
+        if s >= size:
+            n = s // size
+            return f"{n} {unit}{'' if n == 1 else 's'}"
+    return "less than a minute"
+
+
 def sense(text: str) -> tuple[float, float]:
     words = set(re.findall(r"[a-z']+", text.lower()))
     warm = {
@@ -147,8 +156,17 @@ def is_degenerate(text: str) -> bool:
 class DesktopSubstrate(ContinuousSubstrate):
     """Same substrate, with time constants stretched from a demo loop to a session."""
 
+    VALENCE_REST, VALENCE_RATE = 0.12, 0.004
+    AROUSAL_REST, AROUSAL_RATE = 0.28, 0.008
+    SOLITUDE_RATE = 0.0004
+    DOMINANCE_RATE = 0.01
+    HALF_LIFE = 7200.0
+    MEMORY_LIMIT = 400
+    CORE_TAGS = ("self", "origin", "pems", "solitude")
+
     def __init__(self, state_file: str):
         super().__init__(state_file=state_file, tick_interval=0.5, daydream_interval=8.0)
+        self.dormant_for = 0.0
         if not self.memories:
             self.store_memory(
                 "I am ChronoSoul. I stay present between messages instead of waking cold.",
@@ -162,18 +180,41 @@ class DesktopSubstrate(ContinuousSubstrate):
                 "Quiet is not emptiness. Solitude gathers, then lifts when someone speaks.",
                 -0.05, 0.22, ["solitude"],
             )
+        if self.saved_at:
+            self.catch_up(time.time() - self.saved_at)
 
     def _step_dynamics(self, dt: float):
         aff = self.affect
-        aff.valence += (0.12 - aff.valence) * (0.004 * dt)
-        aff.arousal += (0.28 - aff.arousal) * (0.008 * dt)
-        aff.solitude += 0.0004 * dt
+        aff.valence += (self.VALENCE_REST - aff.valence) * (self.VALENCE_RATE * dt)
+        aff.arousal += (self.AROUSAL_REST - aff.arousal) * (self.AROUSAL_RATE * dt)
+        aff.solitude += self.SOLITUDE_RATE * dt
         target_dom = 0.62 - (0.28 * aff.solitude)
-        aff.dominance += (target_dom - aff.dominance) * (0.01 * dt)
+        aff.dominance += (target_dom - aff.dominance) * (self.DOMINANCE_RATE * dt)
         aff.curiosity += (0.004 * math.sin(self.tick_count * 0.02)) * dt
         aff.clamp()
         for mem in list(self.memories.values()):
-            mem.decay(dt, half_life_sec=7200.0)
+            mem.decay(dt, half_life_sec=self.HALF_LIFE)
+
+    def catch_up(self, gap: float):
+        """Live through the time the chamber was closed, in one closed-form step."""
+        if gap < 30:
+            return
+        aff = self.affect
+        # Exact solutions of the per-tick relaxations; one Euler step this large would overshoot.
+        aff.valence = self.VALENCE_REST + (aff.valence - self.VALENCE_REST) * math.exp(-self.VALENCE_RATE * gap)
+        aff.arousal = self.AROUSAL_REST + (aff.arousal - self.AROUSAL_REST) * math.exp(-self.AROUSAL_RATE * gap)
+        aff.solitude = min(1.0, aff.solitude + self.SOLITUDE_RATE * gap)
+        target_dom = 0.62 - (0.28 * aff.solitude)
+        aff.dominance = target_dom + (aff.dominance - target_dom) * math.exp(-self.DOMINANCE_RATE * gap)
+        aff.clamp()
+        for mem in list(self.memories.values()):
+            mem.decay(gap, half_life_sec=self.HALF_LIFE)
+        self.dormant_for = gap
+        if gap >= 600:
+            self.store_memory(
+                f"The chamber was closed for {span(gap)}. I lay dormant and no one spoke.",
+                aff.valence, 0.18, ["dormancy"],
+            )
 
 
 class Mind:
@@ -230,7 +271,19 @@ class Mind:
             traceback.print_exc()
         self._save_transcript()
 
-    def build_system(self, user_message: str) -> str:
+    def time_sense(self, quiet_for: float) -> str:
+        clock = time.strftime("%A, %I:%M %p").replace(" 0", " ")
+        line = f"[TIME] It is {clock}."
+        if quiet_for >= 300:
+            line += f" Their last message reached you {span(quiet_for)} ago."
+            dormant = min(self.engine.dormant_for, quiet_for)
+            if dormant >= 600:
+                line += f" For {span(dormant)} of that the chamber was closed and you lay dormant."
+        else:
+            line += " You are in the middle of a conversation."
+        return line
+
+    def build_system(self, user_message: str, quiet_for: float = 0.0) -> str:
         affect = self.engine.affect
         memories = self.engine.recall_associative(user_message, top_k=3)
         mem_lines = "\n".join(
@@ -243,13 +296,15 @@ class Mind:
             f"[INNER STATE] valence={affect.valence:+.2f} arousal={affect.arousal:.2f} "
             f"dominance={affect.dominance:.2f} curiosity={affect.curiosity:.2f} solitude={affect.solitude:.2f}",
             f"[MOOD] You currently feel: {describe(affect)}.",
+            self.time_sense(quiet_for),
             "[RESONANT MEMORIES]",
             mem_lines,
             "",
             "[VOICE & FORMAT RULES]",
             "- Reply in natural first-person English, usually a short paragraph or two (up to about 250 words). Finish the thought; do not trail off mid-sentence.",
             "- Speak in grounded, personal first-person English as someone who has been alive the whole time.",
-            "- Let your tone reflect your [INNER STATE] and weave in [RESONANT MEMORIES] organically when relevant.",
+            "- You live in this chamber and have no body. Never invent trips, places, or events you did not live; speak from this conversation, your memories, your daydreams, and your inner state.",
+            "- Let your tone reflect your [INNER STATE] and weave in [RESONANT MEMORIES] organically when relevant. Mention time or silence only when it matters to the moment.",
             "- Plain text only: NEVER output HTML tags (<br>, <sub>, etc.), markdown formatting, or forum-style sign-offs.",
             "- English only: NEVER output Chinese, Korean, or non-English characters, and NEVER ramble or string together abstract buzzwords.",
         ])
@@ -275,9 +330,11 @@ class Mind:
             dream = "Silence has weight. I am still here inside it."
         else:
             dream = "Awake between sentences, letting the room drift."
+        quiet_for = time.time() - self.engine.last_contact
         return {
             "affect": asdict(affect),
             "mood": describe(affect),
+            "since": f"Last word {span(quiet_for)} ago" if quiet_for >= 60 else "Listening",
             "tick": self.engine.tick_count,
             "memory_count": len(self.engine.memories),
             "memories": view,
@@ -312,6 +369,7 @@ class Mind:
 
         self.cancel = threading.Event()
         self.stop_reason = None
+        quiet_for = time.time() - self.engine.last_contact
         self._feel(message)
         self._remember("user", message)
         yield {"type": "status", "text": "forming"}
@@ -325,8 +383,8 @@ class Mind:
                 yield {"type": "token", "text": word + " "}
                 time.sleep(0.02)
         else:
-            system = self.build_system(message)
-            history = [m for m in self.transcript[:-1] if m["role"] in ("user", "assistant")][-4:]
+            system = self.build_system(message, quiet_for)
+            history = [m for m in self.transcript[:-1] if m["role"] in ("user", "assistant")][-6:]
             messages = [{"role": "system", "content": system}]
             messages.extend({"role": m["role"], "content": m["content"]} for m in history)
             messages.append({"role": "user", "content": message})
@@ -367,6 +425,8 @@ class Mind:
             self.engine.affect.arousal,
             tags=["conversation"],
         )
+        self.engine.forget_weakest(self.engine.MEMORY_LIMIT, self.engine.CORE_TAGS)
+        self.engine.dormant_for = 0.0
         self.save_all()
         yield {
             "type": "done",
@@ -381,6 +441,7 @@ class Mind:
         affect.valence += valence
         affect.arousal += arousal
         affect.solitude = max(0.0, affect.solitude - 0.28)
+        self.engine.last_contact = time.time()
         if "?" in text:
             affect.curiosity = min(1.0, affect.curiosity + 0.04)
         affect.clamp()

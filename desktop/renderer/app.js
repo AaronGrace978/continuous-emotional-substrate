@@ -136,6 +136,7 @@ function applyState(state) {
   renderMemories(state.memories || []);
   document.getElementById("plateTick").textContent = "tick " + Number(state.tick || 0).toLocaleString();
   document.getElementById("plateMem").textContent = Number(state.memory_count || 0) + " enclaves";
+  document.getElementById("since").textContent = state.since || "";
   const dream = state.daydream || "";
   if (dream && dream !== lastDream) {
     lastDream = dream;

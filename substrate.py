@@ -9,13 +9,29 @@ and real-time event injection from sensory/user streams.
 """
 
 import os
+import re
 import time
 import math
 import json
 import threading
 import queue
+from collections import Counter
 from dataclasses import dataclass, field, asdict
-from typing import List, Dict, Any, Optional, Callable
+from typing import List, Dict, Any, Optional, Callable, Iterable, Set
+
+STOPWORDS = frozenset("""
+a about after all also am an and any are as at be because been but by can could did do does
+doing for from get got had has have having he her here hers him his how i i'd i'll i'm i've if
+in into is it it's its just like me more my no not now of oh ok okay on or our out really so
+some than that that's the their them then there these they this those to too up us very was
+we were what when where which while who why will with would yeah yes you you're your yours
+said replied user
+""".split())
+
+
+def keywords(text: str) -> Set[str]:
+    words = (w.strip("'") for w in re.findall(r"[a-z0-9']+", text.lower()))
+    return {w for w in words if len(w) > 1 and w not in STOPWORDS}
 
 @dataclass
 class AffectiveState:
@@ -72,6 +88,8 @@ class ContinuousSubstrate:
         self.last_daydream = time.time()
         self.last_tick_time = time.time()
         self.subscribers: List[Callable[[Dict[str, Any]], None]] = []
+        self.last_contact = time.time()
+        self.saved_at: Optional[float] = None
         
         # Load existing state if available
         self.load_state()
@@ -94,6 +112,7 @@ class ContinuousSubstrate:
             "arousal_delta": arousal_delta,
             "timestamp": time.time()
         }
+        self.last_contact = event["timestamp"]
         self.inbox.put(event)
         return event
 
@@ -111,29 +130,50 @@ class ContinuousSubstrate:
         return enclave
 
     def recall_associative(self, query: str, top_k: int = 3) -> List[MemoryEnclave]:
-        # Associative resonance ranking based on emotional alignment and tags
+        # Associative resonance ranking: rare shared words count most (IDF), then
+        # transient resonance, then emotional proximity to the current affect.
+        pool = list(self.memories.values())
+        if not pool:
+            return []
+        q_words = keywords(query)
+        docs = {m.id: keywords(m.content) | {t.lower() for t in m.tags} for m in pool}
+        df = Counter(w for words in docs.values() for w in words & q_words)
         scored = []
-        q_tokens = set(query.lower().split())
-        for mem in self.memories.values():
-            mem_tokens = set(mem.content.lower().split() + [t.lower() for t in mem.tags])
-            overlap = len(q_tokens.intersection(mem_tokens))
-            # Emotional proximity to current affect
+        for mem in pool:
+            hits = q_words & docs[mem.id]
+            relevance = sum(math.log(1.0 + len(pool) / df[w]) for w in hits)
             aff_dist = math.sqrt(
                 (mem.valence - self.affect.valence) ** 2 +
                 (mem.arousal - self.affect.arousal) ** 2
             )
             proximity = 1.0 / (1.0 + aff_dist)
-            score = (overlap * 2.0) + (mem.resonance * 1.5) + proximity
-            scored.append((score, mem))
+            score = (relevance * 2.0) + (mem.resonance * 1.5) + proximity
+            scored.append((score, relevance, mem))
 
         scored.sort(key=lambda x: x[0], reverse=True)
         results = []
-        for s, mem in scored[:top_k]:
-            mem.access_count += 1
-            mem.last_recalled = time.time()
-            mem.resonance = min(2.0, mem.resonance + 0.2) # Synaptic reinforcement
+        now = time.time()
+        for _, relevance, mem in scored[:top_k]:
+            # Reinforcing on resonance alone would let the strongest few never fade.
+            if relevance >= 1.0:
+                mem.access_count += 1
+                mem.last_recalled = now
+                mem.resonance = min(2.0, mem.resonance + 0.2)
             results.append(mem)
         return results
+
+    def forget_weakest(self, limit: int, keep_tags: Iterable[str] = ("self", "origin")) -> List[MemoryEnclave]:
+        """Drop the faintest, least-revisited enclaves once the bank exceeds `limit`."""
+        excess = len(self.memories) - limit
+        if excess <= 0:
+            return []
+        protected = set(keep_tags)
+        candidates = [m for m in list(self.memories.values()) if not protected.intersection(m.tags)]
+        candidates.sort(key=lambda m: (m.resonance + 0.15 * m.access_count, m.last_recalled))
+        dropped = candidates[:excess]
+        for mem in dropped:
+            self.memories.pop(mem.id, None)
+        return dropped
 
     def _process_inbox(self):
         while not self.inbox.empty():
@@ -169,7 +209,7 @@ class ContinuousSubstrate:
         self.affect.clamp()
 
         # Decay memories over time
-        for mem in self.memories.values():
+        for mem in list(self.memories.values()):
             mem.decay(dt)
 
     def _daydream_cycle(self):
@@ -208,6 +248,9 @@ class ContinuousSubstrate:
             self.last_daydream = now
             self._daydream_cycle()
 
+        if len(self.stream_log) > 500:
+            del self.stream_log[:-250]
+
         return {
             "tick": self.tick_count,
             "affect": asdict(self.affect),
@@ -234,12 +277,27 @@ class ContinuousSubstrate:
     def save_state(self):
         data = {
             "tick_count": self.tick_count,
+            "saved_at": time.time(),
+            "last_contact": self.last_contact,
             "affect": asdict(self.affect),
-            "memories": {k: asdict(v) for k, v in self.memories.items()},
+            "memories": {k: asdict(v) for k, v in list(self.memories.items())},
             "stream_log_tail": self.stream_log[-50:]
         }
-        with open(self.state_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        payload = json.dumps(data, indent=2)
+        # Write-then-rename so a crash mid-save can't leave a truncated state file.
+        tmp = self.state_file + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(payload)
+        try:
+            os.replace(tmp, self.state_file)
+        except OSError:
+            # Sync clients (OneDrive, Dropbox) can briefly lock the target on Windows.
+            with open(self.state_file, "w", encoding="utf-8") as f:
+                f.write(payload)
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
     def load_state(self):
         if not os.path.exists(self.state_file):
@@ -248,6 +306,8 @@ class ContinuousSubstrate:
             with open(self.state_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
             self.tick_count = data.get("tick_count", 0)
+            self.saved_at = data.get("saved_at") or os.path.getmtime(self.state_file)
+            self.last_contact = data.get("last_contact") or self.saved_at
             if "affect" in data:
                 self.affect = AffectiveState(**data["affect"])
             if "memories" in data:

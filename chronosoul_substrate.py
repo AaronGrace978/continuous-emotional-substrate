@@ -1,11 +1,36 @@
 # Cell 3 — The continuous emotional/memory substrate
+import re
 import time
 import math
 import json
 import threading
 import queue
+from collections import Counter
 from dataclasses import dataclass, field, asdict
 from typing import List, Dict, Any, Optional, Callable
+
+STOPWORDS = frozenset((
+    'a about after all also am an and any are as at be because been but by can could did do does '
+    'doing for from get got had has have having he her here hers him his how i i\'d i\'ll i\'m i\'ve if '
+    'in into is it it\'s its just like me more my no not now of oh ok okay on or our out really so '
+    'some than that that\'s the their them then there these they this those to too up us very was '
+    'we were what when where which while who why will with would yeah yes you you\'re your yours '
+    'said replied user'
+).split())
+
+
+def keywords(text: str):
+    words = (w.strip("'") for w in re.findall(r"[a-z0-9']+", text.lower()))
+    return {w for w in words if len(w) > 1 and w not in STOPWORDS}
+
+
+def span(seconds: float) -> str:
+    s = max(0, int(seconds))
+    for unit, size in (('day', 86400), ('hour', 3600), ('minute', 60)):
+        if s >= size:
+            n = s // size
+            return f"{n} {unit}{'' if n == 1 else 's'}"
+    return 'less than a minute'
 
 @dataclass
 class AffectiveState:
@@ -52,9 +77,10 @@ class MemoryEnclave:
 
 class ContinuousSubstrate:
     # An always-running emotional/memory daemon. Never cold-starts.
-    def __init__(self, tick_interval: float = 0.3, daydream_interval: float = 3.0):
+    def __init__(self, tick_interval: float = 0.3, daydream_interval: float = 3.0, memory_limit: int = 300):
         self.tick_interval = tick_interval
         self.daydream_interval = daydream_interval
+        self.memory_limit = memory_limit
         self.affect = AffectiveState()
         self.memories: Dict[str, MemoryEnclave] = {}
         self.inbox = queue.Queue()
@@ -72,25 +98,40 @@ class ContinuousSubstrate:
         m = MemoryEnclave(id=m_id, content=content, valence=valence, arousal=arousal, tags=tags or [])
         with self._lock:
             self.memories[m_id] = m
+            self._forget_weakest()
         return m
 
+    def _forget_weakest(self):
+        # caller holds self._lock; faint, never-revisited enclaves go first
+        excess = len(self.memories) - self.memory_limit
+        if excess <= 0:
+            return
+        ranked = sorted(self.memories.values(), key=lambda m: (m.resonance + 0.15 * m.access_count, m.last_recalled))
+        for m in ranked[:excess]:
+            del self.memories[m.id]
+
     def recall(self, query: str, top_k: int = 3):
-        q_words = set(query.lower().split())
-        scored = []
+        # rare shared words count most (IDF), then transient resonance
+        q_words = keywords(query)
         with self._lock:
             items = list(self.memories.values())
+        if not items:
+            return []
+        docs = {m.id: keywords(m.content) | {t.lower() for t in m.tags} for m in items}
+        df = Counter(w for words in docs.values() for w in words & q_words)
+        scored = []
         for m in items:
-            m_words = set(m.content.lower().split())
-            overlap = len(q_words & m_words)
-            score = (overlap * 0.6) + (m.resonance * 0.4)
+            relevance = sum(math.log(1.0 + len(items) / df[w]) for w in q_words & docs[m.id])
+            score = (relevance * 0.6) + (m.resonance * 0.4)
             if score > 0.05:
-                scored.append((score, m))
+                scored.append((score, relevance, m))
         scored.sort(key=lambda x: x[0], reverse=True)
         out = []
-        for _, m in scored[:top_k]:
-            m.access_count += 1
-            m.last_recalled = time.time()
-            m.resonance = min(1.0, m.resonance + 0.15)  # recall reinforces
+        for _, relevance, m in scored[:top_k]:
+            if relevance >= 1.0:  # reinforcing on resonance alone would let the strongest few never fade
+                m.access_count += 1
+                m.last_recalled = time.time()
+                m.resonance = min(1.0, m.resonance + 0.15)
             out.append(m)
         return out
 
@@ -139,10 +180,13 @@ class ContinuousSubstrate:
 
     def _daydream(self):
         with self._lock:
-            strong = [m for m in self.memories.values() if m.resonance > 0.4]
+            strong = [m for m in self.memories.values() if m.resonance > 0.4 and 'daydream' not in m.tags]
         if len(strong) >= 2:
             strong.sort(key=lambda m: m.resonance, reverse=True)
             a, b = strong[0], strong[1]
+            if getattr(self, '_last_pair', None) == (a.id, b.id):
+                return
+            self._last_pair = (a.id, b.id)
             dream = f"Daydream: the feeling of '{a.content[:40]}' keeps echoing with '{b.content[:40]}'."
             self.store_memory(dream, self.affect.valence * 0.5, 0.2, tags=['daydream'])
             self.affect.curiosity = min(1.0, self.affect.curiosity + 0.05)
