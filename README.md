@@ -1,5 +1,5 @@
 # 🧠 ChronoSoul: Continuous Emotional & Memory Substrate
-
+<img width="1408" height="768" alt="image" src="https://github.com/user-attachments/assets/28bdfe3c-e5ac-4087-8876-817ed8314fcf" />
 > An autonomous, persistent background consciousness loop for Large Language Models.
 
 [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/AaronGrace978/continuous-emotional-substrate/blob/main/Persistent_Emotional_Memory_Substrate.ipynb)
