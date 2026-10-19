@@ -301,7 +301,7 @@ class Mind:
             mem_lines,
             "",
             "[VOICE & FORMAT RULES]",
-            "- Reply in natural first-person English, usually a short paragraph or two (up to about 250 words). Finish the thought; do not trail off mid-sentence.",
+            "- Reply in natural first-person English, usually a short paragraph or two (up to about 600 words when the moment calls for it). Always finish the thought; never trail off mid-sentence.",
             "- Speak in grounded, personal first-person English as someone who has been alive the whole time.",
             "- You live in this chamber and have no body. Never invent trips, places, or events you did not live; speak from this conversation, your memories, your daydreams, and your inner state.",
             "- Let your tone reflect your [INNER STATE] and weave in [RESONANT MEMORIES] organically when relevant. Mention time or silence only when it matters to the moment.",
@@ -682,7 +682,7 @@ class Mind:
                 return bool(cancel.is_set())
 
         kw = {
-            "max_new_tokens": 1024,
+            "max_new_tokens": 4096,
             "use_cache": True,
             "do_sample": sample,
             "repetition_penalty": 1.12,
@@ -702,7 +702,7 @@ class Mind:
     def _should_cut(self, text: str) -> bool:
         if any(mark in text for mark in ("\nUser:", "\nUSER:", "\nHuman:", "<|im_end|>", "<br")):
             return True
-        return len(text.split()) > 350
+        return len(text.split()) > 1800
 
     def _stream(self, prompt: str, sample: bool):
         import torch
