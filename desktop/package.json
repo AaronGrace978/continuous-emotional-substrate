@@ -1,0 +1,14 @@
+{
+  "name": "chronosoul",
+  "productName": "ChronoSoul",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A chamber for talking with the ChronoSoul mind",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^33.4.11"
+  }
+}
