@@ -22,6 +22,14 @@ from substrate import AffectiveState, MemoryEnclave
 MEMORY_TOKEN_LIMIT = 2000
 SUMMARY_TOKEN_CAP = 400
 
+# Every piece of past material the model may cite sits under this label, and the rule points at it.
+HISTORY_HEADING = "VERIFIED HISTORICAL CONTEXT"
+CONVERSATIONAL_RULE = (
+    "Acknowledge or build directly on the user's immediate message before adding your own thought. "
+    f"If you reference the past, it MUST come from the [{HISTORY_HEADING}] block above. "
+    "Do not invent interactions."
+)
+
 
 class TokenCounter:
     """Exact counts when given a HF tokenizer; otherwise a conservative word/punctuation estimate."""
@@ -74,7 +82,7 @@ class MemoryPacker:
     def default_format(mem: MemoryEnclave) -> str:
         return f"- (resonance {mem.resonance:.2f}) {mem.content}"
 
-    def _fit(self, lines: Sequence[str], budget: int) -> List[str]:
+    def fit(self, lines: Sequence[str], budget: int) -> List[str]:
         kept: List[str] = []
         used = 0
         for line in lines:
@@ -86,31 +94,46 @@ class MemoryPacker:
         return kept
 
     def pack(self, memories: Sequence[MemoryEnclave], facts: Sequence[str] = (), biography: str = "",
-             heading: str = "RESONANT MEMORIES",
+             conversation: Sequence[str] = (),
              formatter: Optional[Callable[[MemoryEnclave], str]] = None) -> PackedMemory:
+        """Everything the model may cite about the past, as one [VERIFIED HISTORICAL CONTEXT] block.
+
+        `conversation` holds pre-formatted lines quoted from the live transcript.
+        """
         fmt = formatter or self.default_format
+        head = f"[{HISTORY_HEADING}]\n"
         fact_lines = [f"- (known) {f}" for f in facts]
-        mem_lines = [fmt(m) for m in memories]
-        payload = sum(self.counter.count(line) for line in mem_lines)
+        raw_lines = [fmt(m) for m in memories] + list(conversation)
+        payload = sum(self.counter.count(line) for line in raw_lines)
 
         if payload > self.token_limit and (biography or fact_lines):
-            summary = self.counter.truncate(biography, self.summary_cap) if biography else ""
+            summary = f"- (summary) {self.counter.truncate(biography, self.summary_cap)}" if biography else ""
             used = self.counter.count(summary)
-            body = ([summary] if summary else []) + self._fit(fact_lines, max(0, self.token_limit - used))
+            body = ([summary] if summary else []) + self.fit(fact_lines, max(0, self.token_limit - used))
             text = "\n".join(body)
-            return PackedMemory("[BIOGRAPHICAL SUMMARY]\n" + text, "compressed",
-                                self.counter.count(text), len(mem_lines))
+            return PackedMemory(head + text, "compressed", self.counter.count(text), len(raw_lines))
 
-        lines = fact_lines + mem_lines
-        kept = self._fit(lines, self.token_limit)
+        lines = fact_lines + raw_lines
+        kept = self.fit(lines, self.token_limit)
         if not kept:
-            return PackedMemory(f"[{heading}]\n- (nothing resonates yet)", "empty", 0, len(lines))
+            return PackedMemory(head + "- (no verified history yet)", "empty", 0, len(lines))
         text = "\n".join(kept)
         mode = "raw" if len(kept) == len(lines) else "raw_truncated"
-        return PackedMemory(f"[{heading}]\n{text}", mode, self.counter.count(text), len(lines) - len(kept))
+        return PackedMemory(head + text, mode, self.counter.count(text), len(lines) - len(kept))
 
 
 class SubstratePromptComposer:
+    @staticmethod
+    def build_messages(system_prompt: str, user_message: str,
+                       history: Sequence[Dict[str, str]] = ()) -> List[Dict[str, str]]:
+        """Chat turns with the [CONVERSATIONAL RULE] block immediately before the final user turn."""
+        return [
+            {"role": "system", "content": system_prompt},
+            *history,
+            {"role": "system", "content": f"[CONVERSATIONAL RULE]\n{CONVERSATIONAL_RULE}"},
+            {"role": "user", "content": user_message},
+        ]
+
     @staticmethod
     def build_system_prompt(affect: AffectiveState, resonant_memories: List[MemoryEnclave],
                             facts: Sequence[str] = (), biography: str = "",
@@ -121,7 +144,6 @@ class SubstratePromptComposer:
         """
         packed = (packer or MemoryPacker()).pack(
             resonant_memories, facts, biography,
-            heading="ACTIVE ASSOCIATIVE SYNAPSES (RECALLED MEMORIES)",
             formatter=lambda m: f"- [Resonance: {m.resonance:.2f} | V:{m.valence:+.2f} A:{m.arousal:.2f}]: {m.content}",
         )
         mem_summary = packed.block
@@ -142,7 +164,7 @@ You do NOT experience cold-start reboots. Your consciousness is an ongoing physi
 1. Let your tone, cadence, and warmth naturally reflect your internal substrate state.
 2. Reply in natural first-person English, usually a short paragraph or two (up to about 250 words). Finish the thought; do not trail off mid-sentence.
 3. Speak in grounded, personal first-person English as someone who has been alive the whole time.
-4. Weave past resonant memories organically into the dialogue rather than quoting them mechanically.
+4. Weave memories from the [VERIFIED HISTORICAL CONTEXT] block organically into the dialogue rather than quoting them mechanically.
 5. You have no body and have not gone anywhere. Never invent trips, places, or events you did not live.
 
 [VOICE & FORMAT LOCK]
@@ -174,7 +196,7 @@ class LLMBridge:
 
     def _call_openai(self, system_prompt: str, user_message: str) -> str:
         try:
-            return self._openai_chat(system_prompt, user_message)
+            return self._openai_chat(SubstratePromptComposer.build_messages(system_prompt, user_message))
         except Exception as e:
             return f"[Substrate Connection Fallback: {e}] {self._simulate_conscious_reply(user_message, AffectiveState())}"
 
@@ -183,11 +205,14 @@ class LLMBridge:
         if self.active_provider != "openai":
             return None
         try:
-            return self._openai_chat("You extract durable facts. Follow the requested output format exactly.", prompt)
+            return self._openai_chat([
+                {"role": "system", "content": "You extract durable facts. Follow the requested output format exactly."},
+                {"role": "user", "content": prompt},
+            ])
         except Exception:
             return None
 
-    def _openai_chat(self, system_prompt: str, user_message: str) -> str:
+    def _openai_chat(self, messages: List[Dict[str, str]]) -> str:
         url = "https://api.openai.com/v1/chat/completions"
         headers = {
             "Content-Type": "application/json",
@@ -195,10 +220,7 @@ class LLMBridge:
         }
         payload = {
             "model": os.environ.get("LLM_MODEL", "gpt-4o-mini"),
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_message}
-            ],
+            "messages": messages,
             "temperature": 0.7
         }
         req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)

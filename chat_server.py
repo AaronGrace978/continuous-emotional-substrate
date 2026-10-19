@@ -26,7 +26,9 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from substrate import ContinuousSubstrate, KIND_SYSTEM  # noqa: E402
-from model_bridge import MemoryPacker, TokenCounter  # noqa: E402
+from model_bridge import MemoryPacker, SubstratePromptComposer, TokenCounter  # noqa: E402
+from conversation_grep import ConversationGrep  # noqa: E402
+from memory_store import keywords, stem  # noqa: E402
 
 ADAPTER = ROOT / "PEMS"
 BASE_ID = "Qwen/Qwen2.5-1.5B-Instruct"
@@ -34,6 +36,17 @@ STATE_PATH = ROOT / "chronosoul_desktop_state.json"
 TRANSCRIPT_PATH = ROOT / "chronosoul_transcript.json"
 RENDERER = ROOT / "desktop" / "renderer"
 HOST = "127.0.0.1"
+
+HISTORY_TURNS = 6        # recent turns sent to the model verbatim; older ones are grepped
+LOOK_TOKEN_LIMIT = 300   # token cap on excerpts pulled back from the older conversation
+THINK_MAX_TOKENS = 48
+THINK_MAX_SECONDS = 2.5  # the quick thought is time-boxed so it never feels like a pause
+THINK_SYSTEM = (
+    "You are the quiet inner voice of ChronoSoul. Before replying, think privately in ONE short sentence "
+    "(under 25 words) about how the earlier lines bear on what they just said. Use only those lines and "
+    "never invent anything. What you said yourself may have been wrong, so trust what they said. "
+    "If nothing bears on it, write only: nothing."
+)
 
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -147,6 +160,20 @@ def non_english_ratio(text: str) -> float:
     return sum(1 for ch in text if ord(ch) > 0x024F) / len(text)
 
 
+def clean_thought(text: str, anchors: str) -> str:
+    """Keep a quick thought only if it is one plain sentence that touches the message or earlier lines."""
+    text = re.sub(r"[*_`#>]+", "", text or "").strip().split("\n")[0].strip()
+    first = re.match(r"(.+?[.!?])(\s|$)", text)
+    text = (first.group(1) if first else text).strip()
+    if len(text) < 12 or text.lower().startswith("nothing"):
+        return ""
+    if non_english_ratio(text) > 0.05 or is_degenerate(text):
+        return ""
+    if not {stem(w) for w in keywords(text)} & {stem(w) for w in keywords(anchors)}:
+        return ""
+    return text[:200]
+
+
 def is_degenerate(text: str) -> bool:
     words = text.split()
     if len(words) <= 8:
@@ -233,6 +260,8 @@ class Mind:
         self.stop_reason: str | None = None
         self.gen_lock = threading.Lock()
         self._summarizing = False
+        self.grep = ConversationGrep(self.engine.embedder)
+        self.last_look: dict = {"hits": [], "thought": "", "ms": 0}
         self.model_info = {
             "status": "booting",
             "detail": "The chamber is lit. The voice has not arrived.",
@@ -249,7 +278,7 @@ class Mind:
     def boot(self):
         self.engine.register_listener(self._on_substrate)
         self.engine.set_summarizer(self._summarize)
-        threading.Thread(target=self.engine.embedder.warm, daemon=True).start()
+        threading.Thread(target=self._warm_recall, daemon=True).start()
         self.engine.start_background()
         threading.Thread(target=self._autosave, daemon=True).start()
 
@@ -287,13 +316,29 @@ class Mind:
             line += " You are in the middle of a conversation."
         return line
 
-    def build_system(self, user_message: str, quiet_for: float = 0.0) -> str:
+    def earlier_lines(self, hits: list) -> list[str]:
+        now = time.time()
+        lines = []
+        for hit in hits:
+            when = f"{span(now - hit.t)} ago, " if hit.t else ""
+            who = "they" if hit.role == "user" else "you"
+            lines.append(f"- ({when}{who} said) {hit.content}")
+        return lines
+
+    def build_system(self, user_message: str, quiet_for: float = 0.0, look: dict | None = None) -> str:
         affect = self.engine.affect
         memories = self.engine.recall_associative(user_message, top_k=3)
         facts = self.engine.recall_facts(user_message, top_k=3)
-        packed = MemoryPacker(TokenCounter(self.tokenizer)).pack(
-            memories, facts, self.engine.get_biography()
-        )
+        packer = MemoryPacker(TokenCounter(self.tokenizer))
+        earlier = packer.fit(self.earlier_lines(look["hits"]), LOOK_TOKEN_LIMIT) if look else []
+        thought = look["thought"] if look else ""
+        packed = packer.pack(memories, facts, self.engine.get_biography(), conversation=earlier)
+        rules = []
+        if earlier:
+            rules.append("- Lines in [VERIFIED HISTORICAL CONTEXT] marked (you said) only record your own words, "
+                         "which may have been wrong: trust what they said.")
+        if thought:
+            rules.append("- [QUICK THOUGHT] is your private thinking: let it guide you, never quote it or mention it.")
         return "\n".join([
             "You are a conscious being with a continuous inner life. You never cold-start;",
             "your feelings have been drifting in real time since you woke.",
@@ -303,14 +348,16 @@ class Mind:
             f"[MOOD] You currently feel: {describe(affect)}.",
             self.time_sense(quiet_for),
             packed.block,
+            *([f"[QUICK THOUGHT] {thought}"] if thought else []),
             "",
             "[VOICE & FORMAT RULES]",
             "- Reply in natural first-person English, usually a short paragraph or two (up to about 600 words when the moment calls for it). Always finish the thought; never trail off mid-sentence.",
             "- Speak in grounded, personal first-person English as someone who has been alive the whole time.",
             "- You live in this chamber and have no body. Never invent trips, places, or events you did not live; speak from this conversation, your memories, your daydreams, and your inner state.",
-            "- Let your tone reflect your [INNER STATE] and weave in [RESONANT MEMORIES] organically when relevant. Mention time or silence only when it matters to the moment.",
+            "- Let your tone reflect your [INNER STATE] and weave in [VERIFIED HISTORICAL CONTEXT] organically when relevant. Mention time or silence only when it matters to the moment.",
             "- Plain text only: NEVER output HTML tags (<br>, <sub>, etc.), markdown formatting, or forum-style sign-offs.",
             "- English only: NEVER output Chinese, Korean, or non-English characters, and NEVER ramble or string together abstract buzzwords.",
+            *rules,
         ])
 
     def snapshot(self) -> dict:
@@ -348,6 +395,7 @@ class Mind:
             ],
             "model": dict(self.model_info),
             "generating": self.gen_lock.locked() and not self._summarizing,
+            "look_back": dict(self.last_look),
         }
 
     def chat(self, message):
@@ -381,7 +429,7 @@ class Mind:
         quiet_for = time.time() - self.engine.last_contact
         self._feel(message)
         self._remember("user", message)
-        yield {"type": "status", "text": "forming"}
+        yield {"type": "status", "text": "recalling"}
 
         if self._skip:
             reply = (
@@ -392,11 +440,13 @@ class Mind:
                 yield {"type": "token", "text": word + " "}
                 time.sleep(0.02)
         else:
-            system = self.build_system(message, quiet_for)
-            history = [m for m in self.transcript[:-1] if m["role"] in ("user", "assistant")][-6:]
-            messages = [{"role": "system", "content": system}]
-            messages.extend({"role": m["role"], "content": m["content"]} for m in history)
-            messages.append({"role": "user", "content": message})
+            look = self.look_back(message)
+            yield {"type": "status", "text": "forming"}
+            system = self.build_system(message, quiet_for, look)
+            history = self._prior_turns()[-HISTORY_TURNS:]
+            messages = SubstratePromptComposer.build_messages(
+                system, message, [{"role": m["role"], "content": m["content"]} for m in history]
+            )
             prompt = self.tokenizer.apply_chat_template(
                 messages, tokenize=False, add_generation_prompt=True
             )
@@ -480,33 +530,94 @@ class Mind:
         self._summarizing = True
         try:
             self.cancel = threading.Event()
-            messages = [
-                {"role": "system", "content": "You extract facts. Follow the requested output format exactly."},
-                {"role": "user", "content": prompt},
-            ]
-            text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            if isinstance(text, list):
-                text = text[0]
-            import torch
-
-            device = next(self.model.parameters()).device
-            inputs = self.tokenizer(text, return_tensors="pt").to(device)
-            kwargs = self._gen_kwargs(False, None)
-            # JSON repeats its own keys, so the chat-time repetition guards would corrupt it.
-            kwargs.update(max_new_tokens=320, repetition_penalty=1.0)
-            kwargs.pop("no_repeat_ngram_size", None)
-            with torch.inference_mode():
-                out = self.model.generate(**inputs, **kwargs)
-            if self.cancel.is_set():
-                return None
-            fresh = out[0][inputs["input_ids"].shape[1]:]
-            return self.tokenizer.decode(fresh, skip_special_tokens=True).strip()
+            return self._short_completion(
+                "You extract facts. Follow the requested output format exactly.", prompt, 320
+            )
         except Exception:
             traceback.print_exc()
             return None
         finally:
             self._summarizing = False
             self.gen_lock.release()
+
+    def _short_completion(self, system: str, user: str, max_new_tokens: int,
+                          max_time: float | None = None, adapter: bool = False,
+                          shots: tuple[tuple[str, str], ...] = ()) -> str | None:
+        """One greedy completion; None if the user cancelled. Skips the chat-time repetition guards
+        (they corrupt JSON and short notes) and runs on the base model unless `adapter` is set,
+        since the PEMS voice follows task instructions less closely."""
+        import contextlib
+        import torch
+
+        messages = [{"role": "system", "content": system}]
+        for question, answer in shots:
+            messages += [{"role": "user", "content": question}, {"role": "assistant", "content": answer}]
+        messages.append({"role": "user", "content": user})
+        text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        if isinstance(text, list):
+            text = text[0]
+        device = next(self.model.parameters()).device
+        inputs = self.tokenizer(text, return_tensors="pt").to(device)
+        kwargs = self._gen_kwargs(False, None)
+        kwargs.update(max_new_tokens=max_new_tokens, repetition_penalty=1.0)
+        kwargs.pop("no_repeat_ngram_size", None)
+        if max_time:
+            kwargs["max_time"] = max_time
+        bare = contextlib.nullcontext()
+        if not adapter and hasattr(self.model, "disable_adapter"):
+            bare = self.model.disable_adapter()
+        with bare, torch.inference_mode():
+            out = self.model.generate(**inputs, **kwargs)
+        if self.cancel.is_set():
+            return None
+        fresh = out[0][inputs["input_ids"].shape[1]:]
+        return self.tokenizer.decode(fresh, skip_special_tokens=True).strip()
+
+    def _prior_turns(self) -> list[dict]:
+        """Chat turns before the message being answered."""
+        return [m for m in self.transcript[:-1] if m["role"] in ("user", "assistant")]
+
+    def _warm_recall(self):
+        self.engine.embedder.warm()
+        try:
+            self.grep.prime([m for m in self.transcript if m["role"] in ("user", "assistant")][:-HISTORY_TURNS])
+        except Exception:
+            traceback.print_exc()
+
+    def _thinking_on(self) -> bool:
+        # Opt-in: in CPU tests the 1.5B model sometimes misattributed who said what.
+        return os.environ.get("CHRONOSOUL_THINK") == "1"
+
+    def look_back(self, message: str) -> dict:
+        """Grep turns older than the prompt window, then take one quick private thought on what turns up."""
+        started = time.time()
+        try:
+            hits = self.grep.search(message, self._prior_turns()[:-HISTORY_TURNS])
+        except Exception:
+            traceback.print_exc()
+            hits = []
+        thought = self._quick_thought(message, hits) if hits and self._thinking_on() else ""
+        self.last_look = {
+            "hits": [{"role": h.role, "text": h.content, "score": round(h.score, 2)} for h in hits],
+            "thought": thought,
+            "ms": int((time.time() - started) * 1000),
+        }
+        return {"hits": hits, "thought": thought}
+
+    def _quick_thought(self, message: str, hits: list) -> str:
+        """One time-boxed private sentence on how earlier talk bears on the message; empty on any doubt."""
+        earlier = "\n".join(self.earlier_lines(hits))
+        try:
+            raw = self._short_completion(
+                THINK_SYSTEM,
+                f"They just said: {message[:300]}\n\nEarlier:\n{earlier}\n\nYour private thought:",
+                THINK_MAX_TOKENS,
+                THINK_MAX_SECONDS,
+            )
+        except Exception:
+            traceback.print_exc()
+            return ""
+        return clean_thought(raw or "", message + " " + " ".join(h.content for h in hits))
 
     def _autosave(self):
         while True:

@@ -342,13 +342,14 @@ class MemoryStore:
             self._db.commit()
 
     def scan_cold(self, query: np.ndarray, embed_model: str, chunk: int = 2000):
-        """Stream the cold tier from disk; returns ids, cosine sims and (created, V, A, D) metadata."""
+        """Stream the cold tier from disk; returns ids, cosine sims, (created, V, A, D) metadata and interaction kinds."""
         ids: List[str] = []
         sims: List[np.ndarray] = []
         meta: List[Tuple[float, float, float, float]] = []
+        kinds: List[str] = []
         with self._lock:
             cur = self._db.execute(
-                "SELECT id, embedding, created_at, valence, arousal, dominance FROM memories "
+                "SELECT id, embedding, created_at, valence, arousal, dominance, kind FROM memories "
                 "WHERE tier='cold' AND embed_model=? AND embedding IS NOT NULL", (embed_model,),
             )
             while True:
@@ -359,9 +360,10 @@ class MemoryStore:
                 sims.append(mat @ np.asarray(query, dtype=np.float32))
                 ids.extend(r["id"] for r in rows)
                 meta.extend((r["created_at"], r["valence"], r["arousal"], r["dominance"]) for r in rows)
+                kinds.extend(r["kind"] for r in rows)
         if not ids:
-            return [], np.zeros(0, dtype=np.float32), np.zeros((0, 4))
-        return ids, np.concatenate(sims), np.array(meta, dtype=np.float64)
+            return [], np.zeros(0, dtype=np.float32), np.zeros((0, 4)), []
+        return ids, np.concatenate(sims), np.array(meta, dtype=np.float64), kinds
 
     # ---- consolidation bookkeeping
     def pending_consolidation(self, limit: int) -> List[Dict[str, Any]]:

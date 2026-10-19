@@ -62,12 +62,18 @@ Click below to open and run the fine-tuning / continuous substrate notebook dire
    - Memories lose transient activation exponentially ($e^{-\lambda t}$) unless recalled or emotionally re-stimulated.
    - Recall is dense semantic search (all-MiniLM-L6-v2 embeddings, FAISS hot index) ranked by `(0.60 x similarity + 0.15 x recency + 0.25 x emotional congruence)`. Emotional congruence is distance in PAD space; when the current state is anxious (negative valence, high arousal) its weight grows and its kernel narrows, so memories filed in a similar mood surface first. Memories linked through the entity graph get a small extra boost.
    - Only memories the moment actually touches get reinforced.
+   - Grounding harness: `user_input` and `system` memories under 5 minutes old have their score doubled, so the live conversation tops the ranking, and recall returns at most 4 memories.
    - Two-tier storage in SQLite (`<state>.db`): the hot tier (400 memories) stays in the vector cache; overflow is archived to cold storage on disk instead of deleted, and is pulled back when recalled. Core identity memories are never archived.
    - Every memory carries a Unix timestamp, PAD coordinates, and an interaction type (`user_input`, `daydream_reflection`, `system`).
 
 3b. **Consolidation & Knowledge Graph:**
    - After a few minutes without contact, the daydream loop gives blocks of raw chat to the LLM to extract permanent facts, then folds them into a short biographical summary. Entities ("user's dog", "project deadline") become graph nodes linking conversations across long gaps.
    - `model_bridge.py` counts tokens before injecting memories. If retrieved raw text exceeds 2,000 tokens it is dropped and the compressed biographical summary is injected instead.
+   - Everything the model may cite about the past sits in one `[VERIFIED HISTORICAL CONTEXT]` block, and a `[CONVERSATIONAL RULE]` message right before the final user turn tells it to build on the user's message and not to invent interactions.
+
+3c. **Quick Look-Back (think before speaking):**
+   - Only the last 6 turns reach the model verbatim. Before each reply, `conversation_grep.py` greps the older transcript (rare shared words plus sentence-level embeddings) and pulls back only what pertains to the new message.
+   - Optional: set `CHRONOSOUL_THINK=1` and, when something turns up, the voice takes one time-boxed private thought (about 48 tokens, 2.5 s cap) on how it bears on the message. The thought is sanity-checked and silently dropped if it is empty, off-topic, or not plain English. It is off by default because a 1.5B model can misattribute who said what.
 
 4. **Sense of Time & Dormancy:**
    - Every prompt carries a `[TIME]` line with the clock and how long it has been since you last spoke.

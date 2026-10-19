@@ -136,6 +136,11 @@ class ContinuousSubstrate:
     MOOD_GAIN = 1.5              # extra emotion weight when anxious (high arousal, negative valence)
     GRAPH_BONUS = 0.15           # additive boost for memories linked through the entity graph
     REINFORCE_MIN_SIM = 0.25
+    # Grounding harness: the live conversation outranks older recall, and recall stays small.
+    LIVE_KINDS = (KIND_USER, KIND_SYSTEM)
+    LIVE_WINDOW_SEC = 300.0
+    LIVE_BOOST = 2.0
+    MAX_RETRIEVED = 4
     # Background distillation of raw chat into permanent facts.
     CONSOLIDATE_IDLE = 120.0     # seconds without contact before the daydream loop distills
     CONSOLIDATE_EVERY = 60.0
@@ -314,6 +319,11 @@ class ContinuousSubstrate:
         total = self.RECALL_ALPHA + self.RECALL_BETA + gamma
         return (self.RECALL_ALPHA * semantic + self.RECALL_BETA * recency + gamma * emotion) / total
 
+    def boost_live_context(self, scores: np.ndarray, created: np.ndarray, kinds: List[str], now: float) -> np.ndarray:
+        """Multiply the score of user_input/system memories younger than LIVE_WINDOW_SEC by LIVE_BOOST."""
+        live = np.array([k in self.LIVE_KINDS for k in kinds], dtype=bool) & (now - created < self.LIVE_WINDOW_SEC)
+        return np.where(live, scores * self.LIVE_BOOST, scores)
+
     def _graph_links(self, query: str) -> Dict[str, float]:
         """Memory ids tied to entities named in the query (1.0) or one hop away (0.5)."""
         direct = self.store.match_entities({stem(w) for w in keywords(query)})
@@ -325,29 +335,35 @@ class ContinuousSubstrate:
         return links
 
     def recall_associative(self, query: str, top_k: int = 3) -> List[MemoryEnclave]:
-        """Dense semantic search over hot and cold tiers, ranked by `score_candidates`."""
+        """Dense semantic search over hot and cold tiers, ranked by `score_candidates`.
+
+        Recent user_input/system memories are boosted, and at most MAX_RETRIEVED are returned.
+        """
         with self._mem_lock:
             self._ensure_index()
             if not self.memories and self.store.count("cold") == 0:
                 return []
             q = self.embedder.encode_one(query)
             hot_ids, hot_sims = self.hot_index.similarities(q)
-            cold_ids, cold_sims, cold_meta = self.store.scan_cold(q, self.embedder.name)
+            cold_ids, cold_sims, cold_meta, cold_kinds = self.store.scan_cold(q, self.embedder.name)
             hot_meta = np.array(
                 [[self.memories[i].created_at, self.memories[i].valence,
                   self.memories[i].arousal, self.memories[i].dominance] for i in hot_ids],
                 dtype=np.float64,
             ).reshape(-1, 4)
             ids = hot_ids + cold_ids
+            kinds = [self.memories[i].kind for i in hot_ids] + cold_kinds
             sims = np.concatenate([hot_sims, cold_sims])
             meta = np.vstack([hot_meta, cold_meta])
             links = self._graph_links(query)
             bonus = np.array([links.get(i, 0.0) for i in ids])
             now = time.time()
-            scores = self.score_candidates(sims, meta[:, 0], meta[:, 1:4], now) + self.GRAPH_BONUS * bonus
+            base = self.score_candidates(sims, meta[:, 0], meta[:, 1:4], now)
+            scores = self.boost_live_context(base, meta[:, 0], kinds, now) + self.GRAPH_BONUS * bonus
 
             results = []
-            for idx in np.argsort(-scores)[:top_k]:
+            limit = max(0, min(top_k, self.MAX_RETRIEVED))
+            for idx in np.argsort(-scores)[:limit]:
                 mem = self.memories.get(ids[idx]) or self._promote(ids[idx])
                 if mem is None:
                     continue
