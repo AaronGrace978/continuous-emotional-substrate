@@ -119,8 +119,8 @@ def clean_reply(text: str) -> str:
     text = re.sub(r"^(assistant|chronosoul)\s*:\s*", "", text, flags=re.IGNORECASE)
     sentences = re.findall(r"[^.!?]+[.!?]+|[^.!?]+$", text)
     sentences = [part.strip() for part in sentences if part.strip()]
-    if len(sentences) > 4:
-        text = " ".join(sentences[:4])
+    if len(sentences) > 12:
+        text = " ".join(sentences[:12])
     if text and text[-1] not in ".!?)\"]'":
         last_end = max(
             text.rfind(". "), text.rfind("! "), text.rfind("? "),
@@ -247,7 +247,7 @@ class Mind:
             mem_lines,
             "",
             "[VOICE & FORMAT RULES]",
-            "- Reply in 2 to 4 short, natural sentences (under 80 words). Stop as soon as your thought is complete.",
+            "- Reply in natural first-person English, usually a short paragraph or two (up to about 250 words). Finish the thought; do not trail off mid-sentence.",
             "- Speak in grounded, personal first-person English as someone who has been alive the whole time.",
             "- Let your tone reflect your [INNER STATE] and weave in [RESONANT MEMORIES] organically when relevant.",
             "- Plain text only: NEVER output HTML tags (<br>, <sub>, etc.), markdown formatting, or forum-style sign-offs.",
@@ -349,7 +349,7 @@ class Mind:
                 self.cancel = threading.Event()
                 locked = prompt
                 if non_english_ratio(reply) > 0.05:
-                    locked = prompt + " (Reply in plain English only, 2-3 short sentences.)"
+                    locked = prompt + " (Reply in plain English only. Finish your thought in a short paragraph.)"
                 try:
                     reply = clean_reply(self._greedy(locked))
                     yield {"type": "replace", "text": reply}
@@ -621,7 +621,7 @@ class Mind:
                 return bool(cancel.is_set())
 
         kw = {
-            "max_new_tokens": 400,
+            "max_new_tokens": 1024,
             "use_cache": True,
             "do_sample": sample,
             "repetition_penalty": 1.12,
@@ -641,7 +641,7 @@ class Mind:
     def _should_cut(self, text: str) -> bool:
         if any(mark in text for mark in ("\nUser:", "\nUSER:", "\nHuman:", "<|im_end|>", "<br")):
             return True
-        return len(text.split()) > 110
+        return len(text.split()) > 350
 
     def _stream(self, prompt: str, sample: bool):
         import torch
