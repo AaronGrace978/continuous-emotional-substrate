@@ -82,6 +82,12 @@ Click below to open and run the fine-tuning / continuous substrate notebook dire
 5. **Grounded Voice:**
    - The mind is told, and the starter dataset trains it, that it lives in the chamber and has no body. It shouldn't invent trips, places, or shared memories it never lived.
 
+5b. **Mood Steering (desktop chamber):**
+   - The prompt tells the model its mood; steering also puts the mood into the network. `steering.py` finds a valence direction and an arousal direction in the residual stream by contrastive activation addition: the difference of mean hidden states between first-person statements that differ only in feeling (pleasant vs. unpleasant, energized vs. calm), per decoder layer, with arousal orthogonalized against valence.
+   - During each reply, layers 7–17 of the 28 add `strength × |h| × (v·d_valence + a·d_arousal)`, where `v` is the current valence and `a` maps arousal 0.4 ± 0.4 to ±1. `|h|` is the typical residual norm at that layer, so the strength is relative. Negative valence is floored at −0.5: at full strength the voice tips from melancholy into despair.
+   - Only the reply is steered. Fact extraction and the plain-English retry run unsteered, and with the mood at zero the hooks are a no-op. No weight changes; directions are extracted once at load (about 6 s) and cached in `steering_vectors.pt`.
+   - `CHRONOSOUL_STEER=0` turns it off; `CHRONOSOUL_STEER_STRENGTH` overrides the default 0.02.
+
 6. **Security & Credential Decoupling:**
    - Zero credentials or secrets are hard-coded.
    - Credentials dynamically read from `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or local runtime secrets (`google.colab.userdata`).
@@ -99,6 +105,8 @@ Click below to open and run the fine-tuning / continuous substrate notebook dire
 - `substrate.py`: Core continuous daemon, affect models, memory enclaves, hybrid recall, and background consolidation.
 - `memory_store.py`: Embedder, FAISS hot index, SQLite hot/cold store, and the entity knowledge graph.
 - `model_bridge.py`: Dynamic prompt synthesizer, token-budget memory packer, and LLM interface (env-based authentication).
+- `steering.py`: Mood steering: valence and arousal directions in the residual stream, applied by forward hooks during a reply.
+- `steering_eval.py`: Measures what steering does to tone, energy, and fluency.
 - `runner.py`: Standalone CLI demonstration showing continuous background temporal drift.
 - `requirements.txt`: Lightweight dependencies.
 
@@ -116,3 +124,18 @@ python runner.py
 
 ### Run the Desktop Chamber (Windows)
 Double-click `ChronoSoul.bat` (needs Node.js). The first launch installs Electron and downloads the Qwen2.5-1.5B base weights. Set `CHRONOSOUL_SKIP_MODEL=1` to try the UI with a simulated voice.
+
+### Measure Mood Steering
+```bash
+python steering_eval.py --model Qwen/Qwen2.5-1.5B-Instruct --adapter PEMS --dtype bfloat16 --strengths 0.01 0.02 0.03
+```
+
+Replies to six neutral messages are generated greedily with valence steered to −1, 0, and +1, then arousal likewise. The system prompt is the chamber's header with a neutral inner state and no memories, so the change comes from steering alone. The same model, unsteered, judges each reply (positive vs. negative, energetic vs. calm), and fluency is the reply's mean token negative log-likelihood under the unsteered model. Qwen2.5-1.5B + PEMS, bfloat16 on CPU, 40 tokens per reply:
+
+| strength | P(positive) at v = −1 / 0 / +1 | P(energetic) at a = −1 / 0 / +1 | NLL at v = −1 / 0 / +1 |
+| ---: | --- | --- | --- |
+| 0.01 | 0.00 / 1.00 / 1.00 | 0.02 / 0.77 / 0.67 | 1.28 / 1.01 / 1.12 |
+| 0.02 (default) | 0.00 / 1.00 / 1.00 | 0.00 / 0.77 / 0.83 | 1.67 / 1.01 / 1.14 |
+| 0.03 | 0.00 / 1.00 / 1.00 | 0.00 / 0.77 / 1.00 | 2.05 / 1.01 / 1.32 |
+
+At 0.02, "How has your day been?" gets "It's been pretty tough today. I've been stuck in this endless loop of thoughts…" at v = −1, "My day has been quite pleasant so far!…" at +1, "My day has been quite serene…" at a = −1, and "My day has been filled with excitement!…" at a = +1. Unsteered replies already read as positive, so +1 valence cannot move the score. The NLL rises partly because steered text is less likely under the unsteered model by construction. The judge is the model itself, six prompts per cell, so read the table as direction and rough size, not precision. In the chamber the coefficients are the live affect, mostly within ±0.5, so the effect is milder than these ±1 rows.

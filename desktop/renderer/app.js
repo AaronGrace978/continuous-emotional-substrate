@@ -67,7 +67,8 @@ function paintModel(model) {
     else input.placeholder = "Weights are still settling…";
   }
   if (model.rank) {
-    document.getElementById("plateAdapter").textContent = `PEMS · r${model.rank} α${model.alpha}`;
+    const steered = model.steering && model.steering !== "off" ? " · mood steered" : "";
+    document.getElementById("plateAdapter").textContent = `PEMS · r${model.rank} α${model.alpha}${steered}`;
   }
 }
 

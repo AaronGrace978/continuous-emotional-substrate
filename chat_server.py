@@ -8,6 +8,7 @@ this process owns the mind.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -34,6 +35,9 @@ ADAPTER = ROOT / "PEMS"
 BASE_ID = "Qwen/Qwen2.5-1.5B-Instruct"
 STATE_PATH = ROOT / "chronosoul_desktop_state.json"
 TRANSCRIPT_PATH = ROOT / "chronosoul_transcript.json"
+STEERING_CACHE = ROOT / "steering_vectors.pt"
+STEER_STRENGTH = 0.02
+STEER_VALENCE_FLOOR = -0.5
 RENDERER = ROOT / "desktop" / "renderer"
 HOST = "127.0.0.1"
 
@@ -252,6 +256,7 @@ class Mind:
         self.daydreams: deque = deque(maxlen=16)
         self.model = None
         self.tokenizer = None
+        self.steerer = None
         self._eos: list[int] = []
         self._gpu_name = ""
         self._skip = False
@@ -271,6 +276,7 @@ class Mind:
             "adapter": "PEMS",
             "rank": 16,
             "alpha": 32,
+            "steering": "off",
         }
         self._read_adapter_meta()
         self._load_transcript()
@@ -454,15 +460,17 @@ class Mind:
                 prompt = prompt[0]
             parts: list[str] = []
             try:
-                for piece in self._stream(prompt, sample=True):
-                    parts.append(piece)
-                    yield {"type": "token", "text": piece}
+                with self._steered():
+                    for piece in self._stream(prompt, sample=True):
+                        parts.append(piece)
+                        yield {"type": "token", "text": piece}
             except Exception as exc:
                 traceback.print_exc()
                 yield {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
                 return
             reply = clean_reply("".join(parts))
             if self.stop_reason != "user" and (non_english_ratio(reply) > 0.05 or is_degenerate(reply)):
+                # The retry runs unsteered: steering is one of the ways a reply can derail.
                 self.cancel = threading.Event()
                 locked = prompt
                 if non_english_ratio(reply) > 0.05:
@@ -492,6 +500,34 @@ class Mind:
             "affect": asdict(self.engine.affect),
             "mood": describe(self.engine.affect),
         }
+
+    def _steered(self):
+        """Steer the residual stream by the current affect for one reply; a no-op without a steerer."""
+        if self.steerer is None:
+            return contextlib.nullcontext()
+        return self.steerer.steer_affect(self.engine.affect)
+
+    def _init_steering(self):
+        if self.steerer is not None:
+            self.steerer.remove()
+            self.steerer = None
+        self.model_info["steering"] = "off"
+        if os.environ.get("CHRONOSOUL_STEER", "1") == "0" or self.model is None:
+            return
+        try:
+            from steering import MoodSteerer
+
+            strength = float(os.environ.get("CHRONOSOUL_STEER_STRENGTH", STEER_STRENGTH))
+            self.model_info["detail"] = "Finding the mood directions"
+            self.steerer = MoodSteerer.load_or_extract(
+                self.model, self.tokenizer, STEERING_CACHE,
+                strength=strength, valence_floor=STEER_VALENCE_FLOOR,
+            )
+            self.model_info["steering"] = self.steerer.describe()
+        except Exception as exc:
+            sys.stderr.write(f"[chronosoul] mood steering unavailable: {exc}\n")
+            traceback.print_exc()
+            self.steerer = None
 
     def _feel(self, text: str):
         valence, arousal = sense(text)
@@ -675,6 +711,7 @@ class Mind:
                 self.model_info["detail"] = "GPU path failed. Loading on CPU…"
                 self._load(False)
                 self._warmup()
+            self._init_steering()
             where = self.model_info.get("gpu") or ("GPU" if self.model_info.get("device") == "cuda" else "CPU")
             self.model_info["status"] = "ready"
             self.model_info["detail"] = f"Awake on {where}"
@@ -809,6 +846,9 @@ class Mind:
             )
 
     def _release(self):
+        if self.steerer is not None:
+            self.steerer.remove()
+            self.steerer = None
         self.model = None
         import gc
         gc.collect()

@@ -6,6 +6,8 @@ persistent_substrate.json
 substrate_state.json
 chronosoul_desktop_state.json
 chronosoul_transcript.json
+steering_vectors.pt
+steering_eval.json
 *.json.tmp
 *.db
 *.db-wal
