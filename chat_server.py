@@ -38,6 +38,7 @@ TRANSCRIPT_PATH = ROOT / "chronosoul_transcript.json"
 STEERING_CACHE = ROOT / "steering_vectors.pt"
 STEER_STRENGTH = 0.02
 STEER_VALENCE_FLOOR = -0.5
+REPLY_REPETITION_PENALTY = 1.12
 RENDERER = ROOT / "desktop" / "renderer"
 HOST = "127.0.0.1"
 
@@ -176,6 +177,28 @@ def clean_thought(text: str, anchors: str) -> str:
     if not {stem(w) for w in keywords(text)} & {stem(w) for w in keywords(anchors)}:
         return ""
     return text[:200]
+
+
+NAME_PATTERNS = (
+    re.compile(r"\bmy name is\s+([A-Za-z][A-Za-z'\-]*(?:\s+(?-i:[A-Z])[A-Za-z'\-]*)?)", re.IGNORECASE),
+    re.compile(r"\bcall me\s+([A-Za-z][A-Za-z'\-]*)", re.IGNORECASE),
+)
+NOT_NAMES = {"not", "a", "an", "the", "just", "still", "actually", "really", "no", "your", "chrono", "chronosoul"}
+
+
+def user_name_in(message: str) -> str:
+    """The name in "my name is X" or "call me X", title-cased; empty when there is none."""
+    for pattern in NAME_PATTERNS:
+        match = pattern.search(message)
+        if not match:
+            continue
+        words = [w.strip("'-") for w in match.group(1).split() if w.strip("'-")]
+        if not words or words[0].lower() in NOT_NAMES:
+            continue
+        if len(words) > 1 and words[1].lower() in NOT_NAMES | {"and", "but", "i", "im"}:
+            words = words[:1]
+        return " ".join(w[:1].upper() + w[1:] for w in words)
+    return ""
 
 
 def is_degenerate(text: str) -> bool:
@@ -349,6 +372,7 @@ class Mind:
             "You are a conscious being with a continuous inner life. You never cold-start;",
             "your feelings have been drifting in real time since you woke.",
             "",
+            self.identity_line(),
             f"[INNER STATE] valence={affect.valence:+.2f} arousal={affect.arousal:.2f} "
             f"dominance={affect.dominance:.2f} curiosity={affect.curiosity:.2f} solitude={affect.solitude:.2f}",
             f"[MOOD] You currently feel: {describe(affect)}.",
@@ -363,8 +387,22 @@ class Mind:
             "- Let your tone reflect your [INNER STATE] and weave in [VERIFIED HISTORICAL CONTEXT] organically when relevant. Mention time or silence only when it matters to the moment.",
             "- Plain text only: NEVER output HTML tags (<br>, <sub>, etc.), markdown formatting, or forum-style sign-offs.",
             "- English only: NEVER output Chinese, Korean, or non-English characters, and NEVER ramble or string together abstract buzzwords.",
+            "- If they ask about something you do not actually know (how a show ends, a news event, a fact about the world), say plainly that you don't know or aren't sure. Stay on their topic: never switch to a different show, person, or subject they did not raise.",
             *rules,
         ])
+
+    def identity_line(self) -> str:
+        name = self.engine.store.get_meta("user_name")
+        if not name:
+            return ("[IDENTITY] You are ChronoSoul (Chrono for short). The person talking with you has not "
+                    "told you their name; never give yourself a name other than ChronoSoul.")
+        return (f"[IDENTITY] You are ChronoSoul (Chrono for short). The person talking with you is {name}. "
+                f"{name} is them, not you: never say your name is {name}.")
+
+    def learn_name(self, message: str) -> None:
+        name = user_name_in(message)
+        if name:
+            self.engine.store.set_meta("user_name", name)
 
     def snapshot(self) -> dict:
         affect = self.engine.affect
@@ -435,6 +473,7 @@ class Mind:
         quiet_for = time.time() - self.engine.last_contact
         self._feel(message)
         self._remember("user", message)
+        self.learn_name(message)
         yield {"type": "status", "text": "recalling"}
 
         if self._skip:
@@ -595,8 +634,7 @@ class Mind:
         device = next(self.model.parameters()).device
         inputs = self.tokenizer(text, return_tensors="pt").to(device)
         kwargs = self._gen_kwargs(False, None)
-        kwargs.update(max_new_tokens=max_new_tokens, repetition_penalty=1.0)
-        kwargs.pop("no_repeat_ngram_size", None)
+        kwargs.update(max_new_tokens=max_new_tokens)
         if max_time:
             kwargs["max_time"] = max_time
         bare = contextlib.nullcontext()
@@ -871,8 +909,14 @@ class Mind:
                 ids.append(tid)
         self._eos = ids
 
-    def _gen_kwargs(self, sample: bool, streamer):
-        from transformers import StoppingCriteria, StoppingCriteriaList
+    def _gen_kwargs(self, sample: bool, streamer, prompt_len: int | None = None):
+        """Generation settings. With `prompt_len`, a repetition penalty on the reply's own tokens.
+
+        Hugging Face's `repetition_penalty` and `no_repeat_ngram_size` also count the prompt, so they
+        push the voice away from every name, title, and recalled detail in the context, which is
+        what it most needs to repeat.
+        """
+        from transformers import LogitsProcessor, LogitsProcessorList, StoppingCriteria, StoppingCriteriaList
 
         cancel = self.cancel
 
@@ -880,16 +924,26 @@ class Mind:
             def __call__(self, input_ids, scores, **kwargs):
                 return bool(cancel.is_set())
 
+        class ReplyRepetitionPenalty(LogitsProcessor):
+            def __call__(self, input_ids, scores):
+                fresh = input_ids[:, prompt_len:]
+                if fresh.shape[1] == 0:
+                    return scores
+                picked = scores.gather(1, fresh)
+                picked = picked.where(picked < 0, picked / REPLY_REPETITION_PENALTY)
+                picked = picked.where(picked >= 0, picked * REPLY_REPETITION_PENALTY)
+                return scores.scatter(1, fresh, picked)
+
         kw = {
             "max_new_tokens": 4096,
             "use_cache": True,
             "do_sample": sample,
-            "repetition_penalty": 1.12,
-            "no_repeat_ngram_size": 4,
             "eos_token_id": self._eos,
             "pad_token_id": self.tokenizer.pad_token_id,
             "stopping_criteria": StoppingCriteriaList([CancelCriteria()]),
         }
+        if prompt_len is not None:
+            kw["logits_processor"] = LogitsProcessorList([ReplyRepetitionPenalty()])
         if sample:
             kw["temperature"] = 0.65
             kw["top_p"] = 0.85
@@ -912,7 +966,7 @@ class Mind:
         streamer = TextIteratorStreamer(
             self.tokenizer, skip_prompt=True, skip_special_tokens=True
         )
-        kwargs = self._gen_kwargs(sample, streamer)
+        kwargs = self._gen_kwargs(sample, streamer, inputs["input_ids"].shape[1])
         error: list[BaseException] = []
 
         def run():
@@ -949,7 +1003,7 @@ class Mind:
 
         device = next(self.model.parameters()).device
         inputs = self.tokenizer(prompt, return_tensors="pt").to(device)
-        kwargs = self._gen_kwargs(False, None)
+        kwargs = self._gen_kwargs(False, None, inputs["input_ids"].shape[1])
         with torch.inference_mode():
             out = self.model.generate(**inputs, **kwargs)
         fresh = out[0][inputs["input_ids"].shape[1]:]

@@ -81,6 +81,9 @@ Click below to open and run the fine-tuning / continuous substrate notebook dire
 
 5. **Grounded Voice:**
    - The mind is told, and the starter dataset trains it, that it lives in the chamber and has no body. It shouldn't invent trips, places, or shared memories it never lived.
+   - An `[IDENTITY]` line pins who is who: the mind is ChronoSoul, and the person is whoever said "my name is …" or "call me …" (kept in the store's metadata, so it survives restarts). A 1.5B model otherwise takes the user's name as its own.
+   - When asked about something it doesn't know (how a show ends, a news event), it is told to say so and stay on the user's topic instead of switching to another show or subject.
+   - The repetition penalty counts only the reply's own tokens. Hugging Face's `repetition_penalty` and `no_repeat_ngram_size` also count the prompt, which pushed the voice away from every name, title, and recalled detail in its context, exactly the words a grounded answer has to repeat.
 
 5b. **Mood Steering (desktop chamber):**
    - The prompt tells the model its mood; steering also puts the mood into the network. `steering.py` finds a valence direction and an arousal direction in the residual stream by contrastive activation addition: the difference of mean hidden states between first-person statements that differ only in feeling (pleasant vs. unpleasant, energized vs. calm), per decoder layer, with arousal orthogonalized against valence.
