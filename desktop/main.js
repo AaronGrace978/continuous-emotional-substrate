@@ -162,6 +162,13 @@ async function ensurePython() {
     "-r",
     path.join(__dirname, "requirements.txt"),
   ]);
+  if (hasGpu()) {
+    try {
+      await run(venvPython, ["-m", "pip", "install", "bitsandbytes>=0.45.0"]);
+    } catch {
+      /* 4-bit quantization is optional; accelerate offload stays available */
+    }
+  }
   const ok = probe(
     venvPython,
     "import torch, transformers, peft; print('ok')"

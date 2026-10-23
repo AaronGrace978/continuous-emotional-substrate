@@ -7,9 +7,10 @@ if errorlevel 1 (
   pause
   exit /b 1
 )
-if not exist "node_modules\electron\package.json" (
+findstr /c:"\"version\": \"45." "node_modules\electron\package.json" >nul 2>&1
+if errorlevel 1 (
   echo Installing Electron...
-  call npm install
+  call npm install --no-fund --no-audit
   if errorlevel 1 (
     echo npm install failed.
     pause

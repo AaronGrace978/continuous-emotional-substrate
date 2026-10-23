@@ -50,6 +50,18 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(ids, list(REQUIRED))
         self.assertEqual(len(ids), len(set(ids)))
         self.assertEqual(BY_ID["local"].kind, "local")
+        for m in ("Qwen/Qwen2.5-1.5B-Instruct", "Qwen/Qwen2.5-3B-Instruct", "Qwen/Qwen2.5-7B-Instruct",
+                  "Qwen/Qwen3-8B", "Qwen/Qwen2.5-14B-Instruct", "Qwen/Qwen3-14B"):
+            self.assertIn(m, BY_ID["local"].models)
+        self.assertIn("gpt-6-astra", BY_ID["openai"].models)
+        self.assertIn("gpt-6.1-sol", BY_ID["openai"].models)
+        self.assertIn("claude-sonnet-5-5", BY_ID["anthropic"].models)
+        self.assertIn("claude-opus-5-5", BY_ID["anthropic"].models)
+        self.assertIn("gemini-4-argon", BY_ID["gemini"].models)
+        self.assertIn("gemini-3.8-flash", BY_ID["gemini"].models)
+        self.assertIn("gemma4:31b", BY_ID["ollama_cloud"].models)
+        self.assertIn("grok-4.7", BY_ID["xai"].models)
+        self.assertIn("deepseek-v4-pro", BY_ID["deepseek"].models)
         self.assertTrue(BY_ID["ollama_cloud"].key_required)
         self.assertEqual(BY_ID["anthropic"].kind, "anthropic")
         self.assertEqual(BY_ID["ollama"].kind, "ollama")

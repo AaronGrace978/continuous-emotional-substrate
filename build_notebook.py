@@ -42,11 +42,11 @@ Traditional LLM chatbots suffer from **amnesic cold-starts**: they awaken only w
 2. **Subconscious Daydreaming:** When idle, background consolidation threads cross-resonate past memories and synthesize new thoughts.
 3. **Synaptic Decay & Reinforcement:** Memories experience exponential decay, reinforced whenever touched or recalled.
 4. **Conditioning Injection:** Dynamically modulates prompts with real-time internal state parameters.
-5. **\U0001f9e0 Finetunable Brain:** Qwen2.5-1.5B-Instruct loaded in 4-bit with LoRA adapters — the substrate's emotional state conditions every generation, and you can train the adapter on your own conversational data.
+5. **\U0001f9e0 Multi-Size PEMS Brain (1.5B \u2192 14B, RTX 5060 Ti & Colab Ready):** Choose from `Qwen/Qwen2.5-1.5B-Instruct`, `Qwen/Qwen2.5-3B-Instruct`, `Qwen/Qwen3-4B`, `Qwen/Qwen2.5-7B-Instruct`, `Qwen/Qwen3-8B`, `Qwen/Qwen2.5-14B-Instruct`, or `Qwen/Qwen3-14B` in 4-bit with LoRA adapters.
 6. **\u23f3 Sense of Time:** Every prompt carries a `[TIME]` line \u2014 the clock, and how long it has been since you last spoke \u2014 so silence is something the mind actually feels, not just a number on a meter.
 7. **\U0001f9ed Grounded Memory:** Recall weights rare shared words (IDF) over filler, the memory bank is capped so the faintest enclaves are forgotten first, and the voice is trained not to invent trips or memories it never lived.
 
-**Recommended runtime:** `Runtime \u2192 Change runtime type \u2192 A100 GPU (high-RAM)`"""
+**Recommended runtime:** `Runtime \u2192 Change runtime type \u2192 A100 / L4 / T4 GPU` (or locally on an **RTX 5060 Ti**)"""
 
 INSTALL_CODE = """# Cell 1 \u2014 Install the finetuning stack (Colab A100 high-RAM ready)
 !pip install -q transformers>=4.44.0 peft>=0.12.0 bitsandbytes>=0.43.0 accelerate>=0.33.0 trl>=0.9.6 datasets>=2.20.0
@@ -281,15 +281,41 @@ substrate = ContinuousSubstrate()
 substrate.start()
 print(f'Substrate daemon running. tick={substrate.tick_interval}s daydream={substrate.daydream_interval}s')"""
 
-MODEL_MD = """## \U0001f9e0 The Brain: A Real, Finetunable Model
-We load **Qwen2.5-1.5B-Instruct** in 4-bit (fits easily on A100 high-RAM, also runs on T4) and attach **LoRA adapters** so finetuning only touches ~0.5% of parameters \u2014 fast and cheap. Swap `MODEL_ID` for a bigger model (e.g. `Qwen/Qwen2.5-7B-Instruct`) on the A100 if you want more capacity."""
+MODEL_MD = """## \U0001f9e0 The Brain: PEMS Model Tiers (RTX 5060 Ti & Colab)
+Pick any preset in `PEMS_PRESET` below:
+
+| Preset | Hugging Face ID | bf16 VRAM | 4-bit NF4 VRAM | Best fit |
+| --- | --- | --- | --- | --- |
+| `1.5B` | `Qwen/Qwen2.5-1.5B-Instruct` | ~3.1 GB | ~1.5 GB | Bundled `PEMS/` LoRA adapter; any GPU or CPU |
+| `3B` | `Qwen/Qwen2.5-3B-Instruct` | ~6.2 GB | ~2.5 GB | RTX 5060 Ti (8 GB / 16 GB) in native bf16 |
+| `4B-Qwen3` | `Qwen/Qwen3-4B` | ~8.0 GB | ~3.2 GB | RTX 5060 Ti (8 GB / 16 GB) |
+| `7B` | `Qwen/Qwen2.5-7B-Instruct` | ~15.2 GB | ~5.5 GB | Sweet spot on RTX 5060 Ti |
+| `8B-Qwen3` | `Qwen/Qwen3-8B` | ~16.4 GB | ~6.0 GB | Latest Qwen3 sweet spot on RTX 5060 Ti |
+| `14B` | `Qwen/Qwen2.5-14B-Instruct` | ~29 GB | ~9.5 GB | Max capacity on RTX 5060 Ti 16 GB (4-bit) |
+| `14B-Qwen3` | `Qwen/Qwen3-14B` | ~29 GB | ~9.8 GB | Max capacity Qwen3 on RTX 5060 Ti 16 GB (4-bit) |
+
+**Do you need to finetune the larger models?**
+- **No \u2014 not required to use them in the desktop chamber.** When you pick `3B`, `4B`, `7B`, `8B`, or `14B` under **Settings \u2192 Local PEMS**, the chamber automatically drives the model with the live PEMS substrate header AND extracts **residual-stream mood steering vectors (`steering.py`)** directly from that model's layers on first launch. Larger 7B\u201314B models follow the PEMS conditioning natively without needing a LoRA adapter.
+- **Optional finetuning:** If you also want a custom-trained PEMS LoRA adapter for a larger model, set `PEMS_PRESET` below and run through Cell 10. It saves `./PEMS-<model-name>` (e.g. `./PEMS-Qwen3-8B`); drop that folder into the ChronoSoul repo root and the desktop chamber will automatically attach it when you select that model."""
 
 MODEL_LOAD_CODE = """# Cell 5 \u2014 Load the base model (4-bit) + attach trainable LoRA adapters
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 from peft import LoraConfig, get_peft_model
 
-MODEL_ID = 'Qwen/Qwen2.5-1.5B-Instruct'   # A100 high-RAM can handle 7B+: 'Qwen/Qwen2.5-7B-Instruct'
+PEMS_PRESETS = {
+    '1.5B': 'Qwen/Qwen2.5-1.5B-Instruct',
+    '3B': 'Qwen/Qwen2.5-3B-Instruct',
+    '4B-Qwen3': 'Qwen/Qwen3-4B',
+    '7B': 'Qwen/Qwen2.5-7B-Instruct',
+    '8B-Qwen3': 'Qwen/Qwen3-8B',
+    '14B': 'Qwen/Qwen2.5-14B-Instruct',
+    '14B-Qwen3': 'Qwen/Qwen3-14B',
+}
+
+# Pick '1.5B', '3B', '4B-Qwen3', '7B', '8B-Qwen3', '14B', or '14B-Qwen3'
+PEMS_PRESET = '8B-Qwen3'
+MODEL_ID = PEMS_PRESETS[PEMS_PRESET]
 
 bnb_config = BitsAndBytesConfig(
     load_in_4bit=True,
@@ -398,6 +424,7 @@ def build_conditioned_prompt(user_message: str, quiet_for: float = 0.0) -> str:
 
 def _clean_reply(text: str) -> str:
     import re
+    text = re.sub(r'<think>[\\s\\S]*?</think>', ' ', text, flags=re.IGNORECASE)
     # Strip raw HTML tags (<br>, <sub>...</sub>, etc.) that slip from web pretraining
     text = re.sub(r'<\\s*br\\s*/?\\s*>', ' ', text, flags=re.IGNORECASE)
     text = re.sub(r'<[^>]+>', '', text)
@@ -426,7 +453,10 @@ def chat(user_message: str, max_new_tokens: int = 400, temperature: float = 0.65
     messages = [{'role': 'system', 'content': system_prompt}]
     messages.extend(CHAT_HISTORY[-6:])
     messages.append({'role': 'user', 'content': user_message})
-    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    try:
+        text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True, enable_thinking=False)
+    except TypeError:
+        text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     inputs = tokenizer(text, return_tensors='pt').to(model.device)
 
     # 3. generate - balanced penalties prevent both token loops AND thesaurus word-salad.
@@ -631,10 +661,17 @@ model.config.use_cache = True
 print('Finetune complete \u2014 LoRA adapter trained and returned to eval mode.')"""
 
 SAVE_CODE = """# Cell 10 \u2014 Save the finetuned adapter (small file \u2014 only the LoRA weights)
-ADAPTER_DIR = './chronosoul_lora_final'
+import shutil
+
+MODEL_SLUG = MODEL_ID.split('/')[-1]
+ADAPTER_DIR = f'./PEMS-{MODEL_SLUG}'
+LEGACY_DIR = './chronosoul_lora_final'
+
 model.save_pretrained(ADAPTER_DIR)
 tokenizer.save_pretrained(ADAPTER_DIR)
-print(f'Adapter saved to {ADAPTER_DIR}')
+shutil.copytree(ADAPTER_DIR, LEGACY_DIR, dirs_exist_ok=True)
+print(f'Adapter saved to {ADAPTER_DIR} (and {LEGACY_DIR}).')
+print(f'Drop {ADAPTER_DIR} into the ChronoSoul repo root to auto-attach it when {MODEL_ID} is selected in Settings.')
 
 # To reload later:
 # from peft import PeftModel

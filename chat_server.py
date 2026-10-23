@@ -139,6 +139,7 @@ def soften(thought: str) -> str:
 
 
 def clean_reply(text: str) -> str:
+    text = re.sub(r"<think>[\s\S]*?</think>", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"<\s*br\s*/?\s*>", " ", text, flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", "", text)
     text = text.replace("<|im_end|>", " ").replace("<|endoftext|>", " ")
@@ -280,6 +281,7 @@ class Mind:
         self.transcript: list[dict] = []
         self.daydreams: deque = deque(maxlen=16)
         self.model = None
+        self._loaded_base = ""
         self.tokenizer = None
         self.steerer = None
         self._eos: list[int] = []
@@ -304,7 +306,7 @@ class Mind:
             "steering": "off",
             "provider": "local",
             "provider_label": "Local PEMS",
-            "model_name": "Qwen2.5-1.5B-Instruct + PEMS",
+            "model_name": BASE_ID,
         }
         self.voice = ProviderSettings(SETTINGS_PATH)
         self.voice.annotate(self.model_info)
@@ -318,27 +320,39 @@ class Mind:
         self.engine.start_background()
         threading.Thread(target=self._autosave, daemon=True).start()
 
+    def _target_base_id(self) -> str:
+        chosen = (self.voice.model_for("local") or "").strip()
+        if not chosen or chosen == "Qwen2.5-1.5B-Instruct + PEMS":
+            return BASE_ID
+        return chosen
+
     def start_model(self):
         if self.voice.uses_remote():
             self.voice.annotate(self.model_info)
             return
+        target_base = self._target_base_id()
         if self._loading:
             return
-        if self.model is not None or self._skip:
+        if (self.model is not None or self._skip) and (self._skip or self._loaded_base == target_base):
             self.model_info["status"] = "ready"
+            self.model_info["base"] = target_base
             if self._skip:
-                self.model_info["detail"] = "Simulated voice"
+                self.model_info["detail"] = f"Simulated voice ({target_base.split('/')[-1]})"
                 self.model_info["device"] = "simulation"
             else:
                 if self.model_info.get("device") == "remote":
                     self.model_info["device"] = "cuda" if self.model_info.get("gpu") else "cpu"
                 where = self.model_info.get("gpu") or ("GPU" if self.model_info.get("device") == "cuda" else "CPU")
-                self.model_info["detail"] = f"Awake on {where}"
+                short = target_base.split("/")[-1]
+                self.model_info["detail"] = f"{short} awake on {where}"
             self.voice.annotate(self.model_info)
             return
+        if self.model is not None and self._loaded_base != target_base:
+            self._release()
         self._loading = True
+        self.model_info["base"] = target_base
         self.model_info["status"] = "loading"
-        self.model_info["detail"] = "Waking the substrate voice"
+        self.model_info["detail"] = f"Waking {target_base.split('/')[-1]}"
         self.voice.annotate(self.model_info)
         threading.Thread(target=self._load_safe, daemon=True).start()
 
@@ -538,11 +552,7 @@ class Mind:
             messages = SubstratePromptComposer.build_messages(
                 system, message, [{"role": m["role"], "content": m["content"]} for m in history]
             )
-            prompt = self.tokenizer.apply_chat_template(
-                messages, tokenize=False, add_generation_prompt=True
-            )
-            if isinstance(prompt, list):
-                prompt = prompt[0]
+            prompt = self._render_chat_template(messages)
             parts: list[str] = []
             try:
                 with self._steered():
@@ -729,9 +739,7 @@ class Mind:
         for question, answer in shots:
             messages += [{"role": "user", "content": question}, {"role": "assistant", "content": answer}]
         messages.append({"role": "user", "content": user})
-        text = self.tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        if isinstance(text, list):
-            text = text[0]
+        text = self._render_chat_template(messages)
         device = next(self.model.parameters()).device
         inputs = self.tokenizer(text, return_tensors="pt").to(device)
         kwargs = self._gen_kwargs(False, None)
@@ -799,12 +807,48 @@ class Mind:
             time.sleep(20)
             self.save_all()
 
-    def _read_adapter_meta(self):
+    def _render_chat_template(self, messages: list[dict]) -> str:
         try:
-            cfg = json.loads((ADAPTER / "adapter_config.json").read_text(encoding="utf-8"))
+            prompt = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+            )
+        except TypeError:
+            prompt = self.tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+        if isinstance(prompt, list):
+            prompt = prompt[0]
+        return prompt
+
+    def _find_adapter(self, base_id: str) -> Path | None:
+        slug = base_id.split("/")[-1]
+        candidates = [ROOT / f"PEMS-{slug}", ADAPTER]
+        for folder in candidates:
+            if not (folder / "adapter_model.safetensors").exists():
+                continue
+            try:
+                cfg = json.loads((folder / "adapter_config.json").read_text(encoding="utf-8"))
+                cfg_base = (cfg.get("base_model_name_or_path") or "").strip()
+            except Exception:
+                cfg_base = ""
+            if folder.name == f"PEMS-{slug}" or cfg_base.lower() == base_id.lower():
+                return folder
+        return None
+
+    def _read_adapter_meta(self, base_id: str | None = None):
+        target = base_id or self._target_base_id()
+        self.model_info["base"] = target
+        folder = self._find_adapter(target)
+        if folder is None:
+            self.model_info["adapter"] = "PEMS substrate"
+            self.model_info["rank"] = 0
+            self.model_info["alpha"] = 0
+            return
+        try:
+            cfg = json.loads((folder / "adapter_config.json").read_text(encoding="utf-8"))
+            self.model_info["adapter"] = "PEMS"
             self.model_info["rank"] = cfg.get("r") or 16
             self.model_info["alpha"] = cfg.get("lora_alpha") or 32
-            self.model_info["base"] = cfg.get("base_model_name_or_path") or BASE_ID
         except Exception:
             pass
 
@@ -827,15 +871,24 @@ class Mind:
 
     def _load_safe(self):
         self._loading = True
-        self._note_local(status="loading", detail="Waking the substrate voice")
+        target_base = self._target_base_id()
+        self._read_adapter_meta(target_base)
+        short = target_base.split("/")[-1]
+        self._note_local(status="loading", detail=f"Waking {short}", base=target_base)
         try:
             if os.environ.get("CHRONOSOUL_SKIP_MODEL") == "1":
                 self._skip = True
-                self._note_local(status="ready", detail="Simulated voice", device="simulation")
+                self._loaded_base = target_base
+                self._note_local(
+                    status="ready",
+                    detail=f"Simulated voice ({short})",
+                    device="simulation",
+                    base=target_base,
+                )
                 return
             cuda = self._probe_cuda()
             try:
-                self._load(cuda)
+                self._load(cuda, target_base)
                 self._warmup()
             except Exception as exc:
                 if not cuda:
@@ -844,12 +897,13 @@ class Mind:
                 traceback.print_exc()
                 self._release()
                 self._note_local(status="loading", detail="GPU path failed. Loading on CPU…")
-                self._load(False)
+                self._load(False, target_base)
                 self._warmup()
+            self._loaded_base = target_base
             self._init_steering()
             where = self.model_info.get("gpu") or ("GPU" if self.model_info.get("device") == "cuda" else "CPU")
-            self._note_local(status="ready", detail=f"Awake on {where}")
-            sys.stderr.write(f"[chronosoul] ready on {where}\n")
+            self._note_local(status="ready", detail=f"{short} awake on {where}", base=target_base)
+            sys.stderr.write(f"[chronosoul] {short} ready on {where}\n")
         except Exception as exc:
             self._note_local(status="error", detail=f"{type(exc).__name__}: {exc}")
             traceback.print_exc()
@@ -877,34 +931,67 @@ class Mind:
             sys.stderr.write(f"[chronosoul] CUDA probe failed: {exc}\n")
             return False
 
-    def _load(self, use_cuda: bool):
+    @staticmethod
+    def _estimate_param_billions(base_id: str) -> float:
+        match = re.search(r"(\d+(?:\.\d+)?)\s*[bB]\b", base_id)
+        return float(match.group(1)) if match else 1.5
+
+    def _load(self, use_cuda: bool, base_id: str = BASE_ID):
         import torch
         from peft import PeftModel
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        if not (ADAPTER / "adapter_model.safetensors").exists():
-            raise FileNotFoundError(f"PEMS adapter weights are missing at {ADAPTER}")
+        adapter_dir = self._find_adapter(base_id)
+        weights = self._download_base(base_id)
+        tok_src = str(adapter_dir) if adapter_dir is not None else weights
 
-        self._note_local(status="loading", detail="Reading the PEMS tokenizer")
-        tokenizer = AutoTokenizer.from_pretrained(str(ADAPTER), trust_remote_code=False)
+        self._note_local(status="loading", detail=f"Reading the {base_id.split('/')[-1]} tokenizer")
+        tokenizer = AutoTokenizer.from_pretrained(tok_src, trust_remote_code=False)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
         if not getattr(tokenizer, "chat_template", None):
-            jinja = ADAPTER / "chat_template.jinja"
+            jinja = (adapter_dir or ADAPTER) / "chat_template.jinja"
             if jinja.exists():
                 tokenizer.chat_template = jinja.read_text(encoding="utf-8")
         self.tokenizer = tokenizer
         self._collect_eos()
 
-        weights = self._download_base()
-        self._note_local(status="loading", detail="Attaching your PEMS adapter")
         dtype = torch.bfloat16 if use_cuda else torch.float32
         if not use_cuda:
             torch.set_num_threads(max(1, (os.cpu_count() or 4) - 1))
 
-        load_kw = {"low_cpu_mem_usage": True, "dtype": dtype}
+        load_kw: dict = {"low_cpu_mem_usage": True, "dtype": dtype}
+        used_device_map = False
         if use_cuda:
             load_kw["attn_implementation"] = "sdpa"
+            vram_gb = 0.0
+            try:
+                vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+            except Exception:
+                vram_gb = 0.0
+            param_b = self._estimate_param_billions(base_id)
+            want_4bit = os.environ.get("CHRONOSOUL_4BIT") == "1" or (
+                vram_gb > 0 and param_b * 2.15 > vram_gb * 0.85
+            )
+            if want_4bit:
+                try:
+                    from transformers import BitsAndBytesConfig
+
+                    import bitsandbytes as _bnb  # noqa: F401
+
+                    load_kw["quantization_config"] = BitsAndBytesConfig(
+                        load_in_4bit=True,
+                        bnb_4bit_quant_type="nf4",
+                        bnb_4bit_compute_dtype=torch.bfloat16,
+                        bnb_4bit_use_double_quant=True,
+                    )
+                    load_kw["device_map"] = "auto"
+                    used_device_map = True
+                except Exception:
+                    load_kw["device_map"] = "auto"
+                    used_device_map = True
+
+        self._note_local(status="loading", detail=f"Loading {base_id.split('/')[-1]} weights")
         try:
             base = AutoModelForCausalLM.from_pretrained(weights, **load_kw)
         except TypeError:
@@ -912,7 +999,11 @@ class Mind:
             load_kw["torch_dtype"] = dtype
             base = AutoModelForCausalLM.from_pretrained(weights, **load_kw)
 
-        model = PeftModel.from_pretrained(base, str(ADAPTER))
+        if adapter_dir is not None:
+            self._note_local(status="loading", detail="Attaching your PEMS adapter")
+            model = PeftModel.from_pretrained(base, str(adapter_dir))
+        else:
+            model = base
         if hasattr(model, "gradient_checkpointing_disable"):
             try:
                 model.gradient_checkpointing_disable()
@@ -921,7 +1012,8 @@ class Mind:
         model.eval()
         model.config.use_cache = True
         device = "cuda" if use_cuda else "cpu"
-        model.to(device)
+        if not used_device_map:
+            model.to(device)
         if getattr(model, "generation_config", None) is not None:
             model.generation_config.pad_token_id = tokenizer.pad_token_id
             model.generation_config.eos_token_id = self._eos
@@ -930,11 +1022,12 @@ class Mind:
         if use_cuda:
             self._note_local(gpu=self._gpu_name or "CUDA")
 
-    def _download_base(self) -> str:
+    def _download_base(self, base_id: str = BASE_ID) -> str:
         from huggingface_hub import snapshot_download
         from tqdm.auto import tqdm
 
-        self._note_local(status="downloading", detail="Fetching Qwen2.5-1.5B. The first launch moves a few gigabytes.")
+        short = base_id.split("/")[-1]
+        self._note_local(status="downloading", detail=f"Fetching {short}. The first launch moves a few gigabytes.")
         mind = self
 
         class Bar(tqdm):
@@ -944,21 +1037,19 @@ class Mind:
                     total = self.total or 0
                     if total:
                         pct = int(100 * (self.n or 0) / total)
-                        mind._note_local(detail=f"Fetching language weights… {pct}%")
+                        mind._note_local(detail=f"Fetching {short} weights… {pct}%")
                 except Exception:
                     pass
                 return shown
 
         try:
             try:
-                return snapshot_download(BASE_ID, tqdm_class=Bar)
+                return snapshot_download(base_id, tqdm_class=Bar)
             except TypeError:
-                return snapshot_download(BASE_ID)
+                return snapshot_download(base_id)
         except Exception as exc:
             raise RuntimeError(
-                "Could not download Qwen/Qwen2.5-1.5B-Instruct. "
-                "The PEMS adapter needs that base model. "
-                f"({exc})"
+                f"Could not download {base_id}. ({exc})"
             ) from exc
 
     def _warmup(self):
@@ -981,6 +1072,7 @@ class Mind:
             self.steerer.remove()
             self.steerer = None
         self.model = None
+        self._loaded_base = ""
         import gc
         gc.collect()
         try:

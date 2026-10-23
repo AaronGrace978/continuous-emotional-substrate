@@ -69,9 +69,14 @@ function paintModel(model) {
   const plate = document.getElementById("plateAdapter");
   if (model.provider && model.provider !== "local") {
     plate.textContent = `${model.provider_label || model.provider} · ${model.model_name || "model"}`;
-  } else if (model.rank) {
+  } else {
+    const shortBase = String(model.base || model.model_name || "Qwen2.5-1.5B").split("/").pop();
     const steered = model.steering && model.steering !== "off" ? " · mood steered" : "";
-    plate.textContent = `PEMS · r${model.rank} α${model.alpha}${steered}`;
+    if (model.rank) {
+      plate.textContent = `${shortBase} · PEMS r${model.rank} α${model.alpha}${steered}`;
+    } else {
+      plate.textContent = `${shortBase} · PEMS${steered}`;
+    }
   }
 }
 
@@ -385,7 +390,7 @@ function showProvider(spec) {
   providerKey.value = "";
   providerClearKey.checked = false;
   if (!needsKey) {
-    keyHint.textContent = "This voice runs on this machine. No key.";
+    keyHint.textContent = "Runs locally with the PEMS substrate and residual-stream mood steering (no key needed). 1.5B uses the bundled PEMS LoRA; 3B–14B run on your RTX 5060 Ti right away and auto-attach a PEMS-<model> adapter if you finetune one.";
   } else if (spec.key_source === "saved") {
     keyHint.textContent = "A key is already saved here. Leave the field blank to keep it.";
   } else if (spec.key_source === "env" && spec.env_key) {
