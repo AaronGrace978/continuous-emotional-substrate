@@ -20,10 +20,13 @@
       <span>Inner weather</span>
       <b id="dreamText">The chamber is lit. The clock is already running.</b>
     </p>
-    <div class="winbtns" id="winbtns">
-      <button type="button" data-act="min" aria-label="Minimize">–</button>
-      <button type="button" data-act="max" aria-label="Maximize">□</button>
-      <button type="button" data-act="close" aria-label="Close">×</button>
+    <div class="top-actions">
+      <button type="button" id="settingsBtn" aria-haspopup="dialog" aria-controls="settings">Settings</button>
+      <div class="winbtns" id="winbtns">
+        <button type="button" data-act="min" aria-label="Minimize">–</button>
+        <button type="button" data-act="max" aria-label="Maximize">□</button>
+        <button type="button" data-act="close" aria-label="Close">×</button>
+      </div>
     </div>
   </header>
 
@@ -83,6 +86,44 @@
       <div class="slips" id="memories"></div>
     </aside>
   </main>
+
+  <dialog id="settings" class="settings" aria-labelledby="settingsTitle">
+    <form id="settingsForm">
+      <header>
+        <div>
+          <p class="kicker">Voice</p>
+          <h2 id="settingsTitle">Model providers</h2>
+        </div>
+        <button type="button" id="settingsClose" aria-label="Close settings">×</button>
+      </header>
+      <p class="settings-lead">Choose who speaks. The substrate keeps the mood and the memory either way. Keys stay on this machine.</p>
+      <div class="provider-grid" id="providerList" role="listbox" aria-label="Providers"></div>
+      <div class="settings-fields">
+        <label>Model
+          <select id="providerModel"></select>
+        </label>
+        <label>Model id
+          <input id="providerModelCustom" type="text" maxlength="200" autocomplete="off" spellcheck="false" placeholder="Use a model that is not in the list" />
+        </label>
+        <label id="urlLabel">Base URL
+          <input id="providerUrl" type="url" maxlength="300" autocomplete="off" spellcheck="false" placeholder="https://example.com/v1" />
+        </label>
+        <label id="keyLabel">API key
+          <input id="providerKey" type="password" maxlength="500" autocomplete="off" spellcheck="false" placeholder="Paste a key" />
+        </label>
+        <p class="key-hint" id="keyHint"></p>
+        <label class="check" id="clearKeyLabel">
+          <input id="providerClearKey" type="checkbox" />
+          Clear the saved key
+        </label>
+      </div>
+      <p class="settings-error" id="settingsError" role="alert"></p>
+      <footer>
+        <p id="settingsActive"></p>
+        <button type="submit" id="settingsSave">Use this voice</button>
+      </footer>
+    </form>
+  </dialog>
 
   <div id="veil">
     <div class="veil-card">

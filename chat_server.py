@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT))
 
 from substrate import ContinuousSubstrate, KIND_SYSTEM  # noqa: E402
 from model_bridge import MemoryPacker, SubstratePromptComposer, TokenCounter  # noqa: E402
+from providers import ProviderError, ProviderSettings  # noqa: E402
 from conversation_grep import ConversationGrep  # noqa: E402
 from memory_store import keywords, stem  # noqa: E402
 
@@ -35,6 +36,7 @@ ADAPTER = ROOT / "PEMS"
 BASE_ID = "Qwen/Qwen2.5-1.5B-Instruct"
 STATE_PATH = ROOT / "chronosoul_desktop_state.json"
 TRANSCRIPT_PATH = ROOT / "chronosoul_transcript.json"
+SETTINGS_PATH = ROOT / "chronosoul_providers.json"
 STEERING_CACHE = ROOT / "steering_vectors.pt"
 STEER_STRENGTH = 0.02
 STEER_VALENCE_FLOOR = -0.5
@@ -300,7 +302,12 @@ class Mind:
             "rank": 16,
             "alpha": 32,
             "steering": "off",
+            "provider": "local",
+            "provider_label": "Local PEMS",
+            "model_name": "Qwen2.5-1.5B-Instruct + PEMS",
         }
+        self.voice = ProviderSettings(SETTINGS_PATH)
+        self.voice.annotate(self.model_info)
         self._read_adapter_meta()
         self._load_transcript()
 
@@ -312,11 +319,44 @@ class Mind:
         threading.Thread(target=self._autosave, daemon=True).start()
 
     def start_model(self):
+        if self.voice.uses_remote():
+            self.voice.annotate(self.model_info)
+            return
         if self._loading:
             return
-        if self.model_info.get("status") == "ready" and (self.model is not None or self._skip):
+        if self.model is not None or self._skip:
+            self.model_info["status"] = "ready"
+            if self._skip:
+                self.model_info["detail"] = "Simulated voice"
+                self.model_info["device"] = "simulation"
+            else:
+                if self.model_info.get("device") == "remote":
+                    self.model_info["device"] = "cuda" if self.model_info.get("gpu") else "cpu"
+                where = self.model_info.get("gpu") or ("GPU" if self.model_info.get("device") == "cuda" else "CPU")
+                self.model_info["detail"] = f"Awake on {where}"
+            self.voice.annotate(self.model_info)
             return
+        self._loading = True
+        self.model_info["status"] = "loading"
+        self.model_info["detail"] = "Waking the substrate voice"
+        self.voice.annotate(self.model_info)
         threading.Thread(target=self._load_safe, daemon=True).start()
+
+    def _note_local(self, **fields):
+        """Status lines from the local weight loader. A remote voice keeps the status for itself."""
+        if self.voice.uses_remote():
+            if fields.get("gpu"):
+                self.model_info["gpu"] = fields["gpu"]
+            return
+        self.model_info.update(fields)
+
+    def apply_provider(self, payload: dict) -> dict:
+        """Save a Settings selection and point the chamber at that voice."""
+        if self.gen_lock.locked():
+            raise ProviderError("Wait until the current thought finishes.")
+        self.voice.update(payload)
+        self.start_model()
+        return self.voice.public()
 
     def request_stop(self):
         self.stop_reason = "user"
@@ -461,6 +501,8 @@ class Mind:
             yield {"type": "error", "message": "Say a little more than silence."}
             return
         message = message.strip()[:4000]
+        if self.voice.uses_remote():
+            self.voice.annotate(self.model_info)
         if self.model_info.get("status") != "ready":
             yield {
                 "type": "error",
@@ -476,7 +518,11 @@ class Mind:
         self.learn_name(message)
         yield {"type": "status", "text": "recalling"}
 
-        if self._skip:
+        if self.voice.uses_remote():
+            reply = yield from self._chat_remote(message, quiet_for)
+            if reply is None:
+                return
+        elif self._skip:
             reply = (
                 f"I am still here. Valence sits at {self.engine.affect.valence:+.2f}, "
                 f"solitude at {self.engine.affect.solitude:.2f}. I heard you."
@@ -540,6 +586,42 @@ class Mind:
             "mood": describe(self.engine.affect),
         }
 
+    def _chat_remote(self, message: str, quiet_for: float):
+        """Stream a reply from the provider chosen in Settings. None when the voice errors."""
+        look = self.look_back(message)
+        yield {"type": "status", "text": "forming"}
+        system = self.build_system(message, quiet_for, look)
+        history = self._prior_turns()[-HISTORY_TURNS:]
+        messages = SubstratePromptComposer.build_messages(
+            system, message, [{"role": m["role"], "content": m["content"]} for m in history]
+        )
+        parts: list[str] = []
+        try:
+            for piece in self.voice.stream(messages, self.cancel):
+                parts.append(piece)
+                yield {"type": "token", "text": piece}
+                if self._should_cut("".join(parts)) and self.stop_reason != "user":
+                    self.stop_reason = "cut"
+                    self.cancel.set()
+                    break
+        except Exception as exc:
+            traceback.print_exc()
+            yield {"type": "error", "message": f"{type(exc).__name__}: {exc}"}
+            return None
+        reply = clean_reply("".join(parts))
+        if self.stop_reason != "user" and reply and (non_english_ratio(reply) > 0.05 or is_degenerate(reply)):
+            self.cancel = threading.Event()
+            retry = list(messages) + [{
+                "role": "user",
+                "content": "Reply in plain English only. Finish your thought in a short paragraph.",
+            }]
+            try:
+                reply = clean_reply(self.voice.complete(retry, cancel=self.cancel))
+                yield {"type": "replace", "text": reply}
+            except Exception:
+                traceback.print_exc()
+        return reply
+
     def _steered(self):
         """Steer the residual stream by the current affect for one reply; a no-op without a steerer."""
         if self.steerer is None:
@@ -550,6 +632,8 @@ class Mind:
         if self.steerer is not None:
             self.steerer.remove()
             self.steerer = None
+        if self.voice.uses_remote():
+            return
         self.model_info["steering"] = "off"
         if os.environ.get("CHRONOSOUL_STEER", "1") == "0" or self.model is None:
             return
@@ -557,7 +641,7 @@ class Mind:
             from steering import MoodSteerer
 
             strength = float(os.environ.get("CHRONOSOUL_STEER_STRENGTH", STEER_STRENGTH))
-            self.model_info["detail"] = "Finding the mood directions"
+            self._note_local(detail="Finding the mood directions")
             self.steerer = MoodSteerer.load_or_extract(
                 self.model, self.tokenizer, STEERING_CACHE,
                 strength=strength, valence_floor=STEER_VALENCE_FLOOR,
@@ -597,7 +681,24 @@ class Mind:
         })
 
     def _summarize(self, prompt: str) -> str | None:
-        """Substrate summarizer hook: one short greedy completion, only when the voice is free."""
+        """Substrate summarizer hook: one short completion, only when the voice is free."""
+        if self.voice.uses_remote():
+            if not self.voice.configured():
+                return None
+            if not self.gen_lock.acquire(blocking=False):
+                return None
+            self._summarizing = True
+            try:
+                return self.voice.complete([
+                    {"role": "system", "content": "You extract facts. Follow the requested output format exactly."},
+                    {"role": "user", "content": prompt},
+                ], cancel=self.cancel, max_tokens=320) or None
+            except Exception:
+                traceback.print_exc()
+                return None
+            finally:
+                self._summarizing = False
+                self.gen_lock.release()
         if self._skip or self.model is None or self.tokenizer is None:
             return None
         if not self.gen_lock.acquire(blocking=False):
@@ -726,14 +827,11 @@ class Mind:
 
     def _load_safe(self):
         self._loading = True
-        self.model_info["status"] = "loading"
-        self.model_info["detail"] = "Waking the substrate voice"
+        self._note_local(status="loading", detail="Waking the substrate voice")
         try:
             if os.environ.get("CHRONOSOUL_SKIP_MODEL") == "1":
                 self._skip = True
-                self.model_info["status"] = "ready"
-                self.model_info["detail"] = "Simulated voice"
-                self.model_info["device"] = "simulation"
+                self._note_local(status="ready", detail="Simulated voice", device="simulation")
                 return
             cuda = self._probe_cuda()
             try:
@@ -745,21 +843,20 @@ class Mind:
                 sys.stderr.write(f"[chronosoul] GPU path failed: {exc}\n")
                 traceback.print_exc()
                 self._release()
-                self.model_info["status"] = "loading"
-                self.model_info["detail"] = "GPU path failed. Loading on CPU…"
+                self._note_local(status="loading", detail="GPU path failed. Loading on CPU…")
                 self._load(False)
                 self._warmup()
             self._init_steering()
             where = self.model_info.get("gpu") or ("GPU" if self.model_info.get("device") == "cuda" else "CPU")
-            self.model_info["status"] = "ready"
-            self.model_info["detail"] = f"Awake on {where}"
+            self._note_local(status="ready", detail=f"Awake on {where}")
             sys.stderr.write(f"[chronosoul] ready on {where}\n")
         except Exception as exc:
-            self.model_info["status"] = "error"
-            self.model_info["detail"] = f"{type(exc).__name__}: {exc}"
+            self._note_local(status="error", detail=f"{type(exc).__name__}: {exc}")
             traceback.print_exc()
         finally:
             self._loading = False
+            if self.voice.uses_remote():
+                self.voice.annotate(self.model_info)
 
     def _probe_cuda(self) -> bool:
         try:
@@ -788,8 +885,7 @@ class Mind:
         if not (ADAPTER / "adapter_model.safetensors").exists():
             raise FileNotFoundError(f"PEMS adapter weights are missing at {ADAPTER}")
 
-        self.model_info["status"] = "loading"
-        self.model_info["detail"] = "Reading the PEMS tokenizer"
+        self._note_local(status="loading", detail="Reading the PEMS tokenizer")
         tokenizer = AutoTokenizer.from_pretrained(str(ADAPTER), trust_remote_code=False)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
@@ -801,8 +897,7 @@ class Mind:
         self._collect_eos()
 
         weights = self._download_base()
-        self.model_info["status"] = "loading"
-        self.model_info["detail"] = "Attaching your PEMS adapter"
+        self._note_local(status="loading", detail="Attaching your PEMS adapter")
         dtype = torch.bfloat16 if use_cuda else torch.float32
         if not use_cuda:
             torch.set_num_threads(max(1, (os.cpu_count() or 4) - 1))
@@ -831,16 +926,15 @@ class Mind:
             model.generation_config.pad_token_id = tokenizer.pad_token_id
             model.generation_config.eos_token_id = self._eos
         self.model = model
-        self.model_info["device"] = device
+        self._note_local(device=device)
         if use_cuda:
-            self.model_info["gpu"] = self._gpu_name or "CUDA"
+            self._note_local(gpu=self._gpu_name or "CUDA")
 
     def _download_base(self) -> str:
         from huggingface_hub import snapshot_download
         from tqdm.auto import tqdm
 
-        self.model_info["status"] = "downloading"
-        self.model_info["detail"] = "Fetching Qwen2.5-1.5B. The first launch moves a few gigabytes."
+        self._note_local(status="downloading", detail="Fetching Qwen2.5-1.5B. The first launch moves a few gigabytes.")
         mind = self
 
         class Bar(tqdm):
@@ -850,7 +944,7 @@ class Mind:
                     total = self.total or 0
                     if total:
                         pct = int(100 * (self.n or 0) / total)
-                        mind.model_info["detail"] = f"Fetching language weights… {pct}%"
+                        mind._note_local(detail=f"Fetching language weights… {pct}%")
                 except Exception:
                     pass
                 return shown
@@ -870,8 +964,7 @@ class Mind:
     def _warmup(self):
         import torch
 
-        self.model_info["status"] = "warming"
-        self.model_info["detail"] = "Warming the voice"
+        self._note_local(status="warming", detail="Warming the voice")
         device = next(self.model.parameters()).device
         inputs = self.tokenizer("Hello", return_tensors="pt").to(device)
         with torch.inference_mode():
@@ -1035,6 +1128,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/state":
             self._json(mind.snapshot())
             return
+        if path == "/providers":
+            self._json(mind.voice.public())
+            return
         rel = "index.html" if path in ("", "/") else path.lstrip("/")
         self._file(rel)
 
@@ -1049,6 +1145,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True})
             return
         if path == "/reload":
+            if mind.voice.uses_remote():
+                mind.voice.annotate(mind.model_info)
+                self._json({"ok": True, "model": mind.model_info})
+                return
             mind.model_info["status"] = "loading"
             mind._loading = False
             mind.model = None
@@ -1060,12 +1160,38 @@ class Handler(BaseHTTPRequestHandler):
             mind.close_journal()
             self._json({"ok": True})
             return
+        if path == "/providers":
+            self._providers(mind)
+            return
         if path == "/shutdown":
             mind.save_all()
             self._json({"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
             return
         self._json({"error": "unknown"}, 404)
+
+    def _providers(self, mind: Mind):
+        if not self._same_origin():
+            self._json({"error": "forbidden"}, 403)
+            return
+        try:
+            settings = mind.apply_provider(self._body())
+        except ProviderError as exc:
+            code = 409 if "current thought" in str(exc) else 400
+            self._json({"error": str(exc)}, code)
+            return
+        self._json({"ok": True, "settings": settings, "model": mind.model_info})
+
+    def _same_origin(self) -> bool:
+        """Browsers send Origin on POST. Only this chamber may change the voice."""
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        host = self.headers.get("Host") or ""
+        parsed = urllib.parse.urlparse(origin)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        return parsed.netloc == host
 
     def _chat(self, mind: Mind):
         message = self._body().get("message", "")

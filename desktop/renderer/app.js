@@ -66,9 +66,12 @@ function paintModel(model) {
     else if (modelStatus === "error") input.placeholder = "The voice did not wake.";
     else input.placeholder = "Weights are still settling…";
   }
-  if (model.rank) {
+  const plate = document.getElementById("plateAdapter");
+  if (model.provider && model.provider !== "local") {
+    plate.textContent = `${model.provider_label || model.provider} · ${model.model_name || "model"}`;
+  } else if (model.rank) {
     const steered = model.steering && model.steering !== "off" ? " · mood steered" : "";
-    document.getElementById("plateAdapter").textContent = `PEMS · r${model.rank} α${model.alpha}${steered}`;
+    plate.textContent = `PEMS · r${model.rank} α${model.alpha}${steered}`;
   }
 }
 
@@ -320,6 +323,188 @@ if (window.chronosoul) {
     }
   });
 }
+
+const settingsDialog = document.getElementById("settings");
+const settingsBtn = document.getElementById("settingsBtn");
+const providerList = document.getElementById("providerList");
+const providerModel = document.getElementById("providerModel");
+const providerModelCustom = document.getElementById("providerModelCustom");
+const providerUrl = document.getElementById("providerUrl");
+const providerKey = document.getElementById("providerKey");
+const providerClearKey = document.getElementById("providerClearKey");
+const keyHint = document.getElementById("keyHint");
+const settingsError = document.getElementById("settingsError");
+const settingsActive = document.getElementById("settingsActive");
+let providerCatalog = [];
+let providerSelected = "local";
+
+function selectedProvider() {
+  return providerCatalog.find((item) => item.id === providerSelected) || providerCatalog[0];
+}
+
+function fillModelSelect(spec) {
+  const custom = providerModelCustom.value.trim();
+  const current = custom || spec.model || spec.default_model || "";
+  providerModel.replaceChildren();
+  const seen = new Set();
+  const add = (id, label) => {
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    const option = document.createElement("option");
+    option.value = id;
+    option.textContent = label || id;
+    providerModel.appendChild(option);
+  };
+  for (const id of spec.models || []) add(id, id);
+  if (current && !seen.has(current)) add(current, current);
+  if (![...seen].length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Type a model id below";
+    providerModel.appendChild(option);
+  }
+  providerModel.value = seen.has(current) ? current : providerModel.options[0].value;
+  providerModelCustom.value = "";
+}
+
+function showProvider(spec) {
+  if (!spec) return;
+  providerSelected = spec.id;
+  providerList.querySelectorAll("button").forEach((btn) => {
+    btn.setAttribute("aria-pressed", btn.dataset.id === spec.id ? "true" : "false");
+  });
+  fillModelSelect(spec);
+  const urlLabel = document.getElementById("urlLabel");
+  const keyLabel = document.getElementById("keyLabel");
+  const clearLabel = document.getElementById("clearKeyLabel");
+  urlLabel.hidden = !spec.base_url_editable;
+  providerUrl.value = spec.base_url || "";
+  const needsKey = spec.kind !== "local";
+  keyLabel.hidden = !needsKey;
+  clearLabel.hidden = !(needsKey && spec.key_source === "saved");
+  providerKey.value = "";
+  providerClearKey.checked = false;
+  if (!needsKey) {
+    keyHint.textContent = "This voice runs on this machine. No key.";
+  } else if (spec.key_source === "saved") {
+    keyHint.textContent = "A key is already saved here. Leave the field blank to keep it.";
+  } else if (spec.key_source === "env" && spec.env_key) {
+    keyHint.textContent = `Using ${spec.env_key} from the environment. Paste a key only to override it.`;
+  } else if (spec.key_required && spec.env_key) {
+    keyHint.textContent = `A key is required. Paste one, or set ${spec.env_key}.`;
+  } else if (spec.env_key) {
+    keyHint.textContent = `Optional. A key can also come from ${spec.env_key}.`;
+  } else {
+    keyHint.textContent = "Optional for this endpoint.";
+  }
+  providerKey.placeholder = spec.has_key ? "Key saved — paste to replace" : "Paste a key";
+  settingsActive.textContent = spec.model
+    ? `${spec.label} · ${spec.model}`
+    : spec.label;
+}
+
+function renderProviders() {
+  providerList.replaceChildren();
+  for (const spec of providerCatalog) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.dataset.id = spec.id;
+    btn.setAttribute("role", "option");
+    const title = document.createElement("strong");
+    title.textContent = spec.label;
+    const blurb = document.createElement("span");
+    blurb.textContent = spec.blurb;
+    btn.append(title, blurb);
+    btn.addEventListener("click", () => showProvider(spec));
+    providerList.appendChild(btn);
+  }
+  showProvider(selectedProvider());
+}
+
+async function openSettings() {
+  settingsError.textContent = "";
+  if (!api) {
+    settingsError.textContent = "The runtime is not open yet.";
+    settingsDialog.showModal();
+    settingsBtn.setAttribute("aria-expanded", "true");
+    return;
+  }
+  try {
+    const res = await fetch(api + "/providers", { cache: "no-store" });
+    if (!res.ok) throw new Error("Settings could not be read (" + res.status + ").");
+    const data = await res.json();
+    providerCatalog = data.providers || [];
+    providerSelected = data.provider || "local";
+    renderProviders();
+  } catch (err) {
+    settingsError.textContent = err.message || "Settings could not be read.";
+  }
+  settingsDialog.showModal();
+  settingsBtn.setAttribute("aria-expanded", "true");
+}
+
+function closeSettings() {
+  if (settingsDialog.open) settingsDialog.close();
+  settingsBtn.setAttribute("aria-expanded", "false");
+}
+
+settingsBtn.addEventListener("click", () => {
+  if (settingsDialog.open) closeSettings();
+  else openSettings();
+});
+
+document.getElementById("settingsClose").addEventListener("click", closeSettings);
+settingsDialog.addEventListener("close", () => {
+  settingsBtn.setAttribute("aria-expanded", "false");
+});
+
+providerModel.addEventListener("change", () => {
+  providerModelCustom.value = "";
+  const spec = selectedProvider();
+  if (!spec) return;
+  settingsActive.textContent = `${spec.label} · ${providerModel.value}`;
+});
+
+document.getElementById("settingsForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  settingsError.textContent = "";
+  const spec = selectedProvider();
+  if (!spec) return;
+  if (!api) {
+    settingsError.textContent = "The runtime is not open yet.";
+    return;
+  }
+  const model = providerModelCustom.value.trim() || providerModel.value;
+  const save = document.getElementById("settingsSave");
+  save.disabled = true;
+  try {
+    const res = await fetch(api + "/providers", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: spec.id,
+        model,
+        base_url: providerUrl.value.trim(),
+        api_key: providerKey.value,
+        clear_key: providerClearKey.checked,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || "The voice could not be saved.");
+    if (data.model) paintModel(data.model);
+    closeSettings();
+    forceSync = true;
+    try {
+      await pollOnce();
+    } catch {
+      /* the loop will catch up */
+    }
+  } catch (err) {
+    settingsError.textContent = err.message || "The voice could not be saved.";
+  } finally {
+    save.disabled = false;
+  }
+});
 
 document.querySelector(".topbar").addEventListener("dblclick", (event) => {
   if (event.target.closest("button")) return;

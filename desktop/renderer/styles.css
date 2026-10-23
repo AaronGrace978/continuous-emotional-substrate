@@ -140,7 +140,34 @@ button, textarea { font: inherit; color: inherit; }
   transition: opacity 0.18s ease;
 }
 
-.winbtns { display: flex; gap: 4px; -webkit-app-region: no-drag; app-region: no-drag; }
+.top-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}
+
+#settingsBtn {
+  height: 28px;
+  border: 1px solid rgba(230, 176, 137, 0.32);
+  background: transparent;
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 0 12px;
+  font-size: 11px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+#settingsBtn:hover,
+#settingsBtn[aria-expanded="true"] {
+  color: var(--ink);
+  border-color: var(--copper);
+}
+
+.winbtns { display: flex; gap: 4px; }
 
 .winbtns button {
   width: 36px;
@@ -628,6 +655,184 @@ textarea {
   text-transform: uppercase;
   font-size: 11px;
   cursor: pointer;
+}
+
+.settings {
+  width: min(760px, calc(100vw - 32px));
+  max-height: min(820px, calc(100vh - 40px));
+  margin: auto;
+  padding: 0;
+  border: 1px solid rgba(230, 176, 137, 0.35);
+  border-radius: 18px;
+  background:
+    radial-gradient(420px 180px at 0% 0%, rgba(230, 176, 137, 0.12), transparent 60%),
+    #1a1613;
+  color: var(--ink);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.5);
+}
+
+.settings::backdrop { background: rgba(8, 6, 5, 0.66); }
+
+.settings form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: min(820px, calc(100vh - 40px));
+  padding: 16px 16px 14px;
+}
+
+.settings header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.settings h2 {
+  margin: 0;
+  font-family: Fraunces, Georgia, serif;
+  font-weight: 520;
+  font-size: 28px;
+}
+
+#settingsClose {
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 20px;
+}
+
+#settingsClose:hover { background: rgba(255, 255, 255, 0.06); color: var(--ink); }
+
+.settings-lead {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 8px;
+  max-height: 280px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.provider-grid button {
+  text-align: left;
+  border: 1px solid rgba(230, 176, 137, 0.22);
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 12px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+
+.provider-grid button:hover { border-color: rgba(230, 176, 137, 0.55); }
+
+.provider-grid button[aria-pressed="true"] {
+  border-color: var(--copper);
+  background: rgba(230, 176, 137, 0.16);
+}
+
+.provider-grid strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 580;
+}
+
+.provider-grid span {
+  display: block;
+  margin-top: 3px;
+  color: var(--faint);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.settings-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 12px;
+}
+
+.settings-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.settings-fields input,
+.settings-fields select {
+  height: 38px;
+  border-radius: 10px;
+  border: 1px solid rgba(230, 176, 137, 0.28);
+  background: rgba(0, 0, 0, 0.28);
+  padding: 0 10px;
+  letter-spacing: 0;
+  text-transform: none;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.settings-fields select { width: 100%; }
+
+.settings-fields .check {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.key-hint, .settings-error, #settingsActive {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--muted);
+}
+
+.settings-error:empty { display: none; }
+.settings-error { color: var(--rose); grid-column: 1 / -1; }
+
+#keyHint { grid-column: 1 / -1; }
+#clearKeyLabel { grid-column: 1 / -1; }
+
+.settings footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+#settingsSave {
+  border: 0;
+  border-radius: 999px;
+  background: var(--copper);
+  color: #2a1c14;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 10px 16px;
+  cursor: pointer;
+}
+
+#settingsSave:hover { background: #f0c4a4; }
+#settingsSave:disabled { opacity: 0.45; cursor: default; }
+
+@media (max-width: 640px) {
+  .settings-fields { grid-template-columns: 1fr; }
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }

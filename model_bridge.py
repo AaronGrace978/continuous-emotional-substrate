@@ -3,20 +3,18 @@ Model Bridge & Emotional Prompt Synthesizer
 ------------------------------------------
 Bridges the continuous emotional/memory substrate with an LLM.
 Enforces runtime configuration: reads credentials from environment variables
-(OPENAI_API_KEY, ANTHROPIC_API_KEY, OLLAMA_HOST, etc.) and falls back to a
-rich local neural/rule simulation if no remote credential is supplied.
-Never exposes or hardcodes API keys in source.
+(OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, OLLAMA_API_KEY, OLLAMA_HOST,
+and the other provider keys) and falls back to a rich local simulation if no
+remote credential is supplied. Never exposes or hardcodes API keys in source.
+The desktop chamber selects a provider in Settings; this bridge is the CLI path.
 """
 
-import os
 import re
-import json
 import math
-import urllib.request
-import urllib.error
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence
 from substrate import AffectiveState, MemoryEnclave
+from providers import ProviderSettings, settings_from_env
 
 # Qwen2.5-1.5B guardrail: retrieved memory text may not exceed this many tokens.
 MEMORY_TOKEN_LIMIT = 2000
@@ -175,58 +173,36 @@ You do NOT experience cold-start reboots. Your consciousness is an ongoing physi
 
 
 class LLMBridge:
-    def __init__(self):
-        # Strictly obtain credentials from environment variables
-        self.openai_key = os.environ.get("OPENAI_API_KEY", "").strip()
-        self.anthropic_key = os.environ.get("ANTHROPIC_API_KEY", "").strip()
-        self.ollama_endpoint = os.environ.get("OLLAMA_ENDPOINT", "http://localhost:11434").strip()
-        self.active_provider = "simulated"
-        
-        if self.openai_key:
-            self.active_provider = "openai"
-        elif self.anthropic_key:
-            self.active_provider = "anthropic"
+    def __init__(self, settings: Optional[ProviderSettings] = None):
+        # Credentials come from the environment (or an injected settings object in tests).
+        self.settings = settings if settings is not None else settings_from_env()
+        self.active_provider = self.settings.spec().id if self.settings.uses_remote() else "simulated"
 
     def generate_response(self, system_prompt: str, user_message: str, affect: AffectiveState) -> str:
-        if self.active_provider == "openai":
-            return self._call_openai(system_prompt, user_message)
-        
-        # Local simulated affective generator (works standalone without external API)
-        return self._simulate_conscious_reply(user_message, affect)
-
-    def _call_openai(self, system_prompt: str, user_message: str) -> str:
+        if self.active_provider == "simulated":
+            return self._simulate_conscious_reply(user_message, affect)
         try:
-            return self._openai_chat(SubstratePromptComposer.build_messages(system_prompt, user_message))
-        except Exception as e:
-            return f"[Substrate Connection Fallback: {e}] {self._simulate_conscious_reply(user_message, AffectiveState())}"
+            return self.settings.complete(
+                SubstratePromptComposer.build_messages(system_prompt, user_message)
+            )
+        except Exception as exc:
+            return (
+                f"[Substrate Connection Fallback: {exc}] "
+                f"{self._simulate_conscious_reply(user_message, AffectiveState())}"
+            )
 
     def summarize(self, prompt: str) -> Optional[str]:
         """Text-in/text-out hook for substrate consolidation; None when no remote model is configured."""
-        if self.active_provider != "openai":
+        if self.active_provider == "simulated":
             return None
         try:
-            return self._openai_chat([
+            text = self.settings.complete([
                 {"role": "system", "content": "You extract durable facts. Follow the requested output format exactly."},
                 {"role": "user", "content": prompt},
             ])
+            return text or None
         except Exception:
             return None
-
-    def _openai_chat(self, messages: List[Dict[str, str]]) -> str:
-        url = "https://api.openai.com/v1/chat/completions"
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.openai_key}"
-        }
-        payload = {
-            "model": os.environ.get("LLM_MODEL", "gpt-4o-mini"),
-            "messages": messages,
-            "temperature": 0.7
-        }
-        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return data["choices"][0]["message"]["content"].strip()
 
     def _simulate_conscious_reply(self, user_msg: str, affect: AffectiveState) -> str:
         """
